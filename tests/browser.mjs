@@ -15,7 +15,7 @@ const {chromium}=await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE).href)
 const browser=await chromium.launch({headless:true,...(process.env.BROWSER_CHANNEL?{channel:process.env.BROWSER_CHANNEL}:{})});
 const page=await browser.newPage({viewport:{width:1440,height:1100}});
 const errors=[];page.on('pageerror',error=>errors.push(error.message));
-let records=[sampleCharacter()],aiCalls=0,resolveAI,delayAI=false,apiOffline=false,apiRequests=0;
+let records=[sampleCharacter()],aiCalls=0,resolveAI,invalidAI=false,delayAI=false,apiOffline=false,apiRequests=0;
 await page.route('**/api/**',async route=>{
     apiRequests++;
     if(apiOffline)return route.abort('connectionfailed');
@@ -38,6 +38,7 @@ await page.route('https://openrouter.ai/api/v1/models',route=>{
 });
 await page.route('**/mock/v1/chat/completions',async route=>{
     aiCalls++;
+    if(invalidAI)return route.fulfill({json:{choices:[{message:{content:'bad JSON private-ui-key'},finish_reason:'stop'}]}});
     if(delayAI)await new Promise(r=>resolveAI=r);
     const delta={summary:'Селена нашла ключ.',facts:[{id:'key',text:'Селена нашла серебряный ключ.'}],characters:[{owner_id:'selena',data:{experience:8500}}],scene:{weather:'Ясно'}};
     await route.fulfill({json:{choices:[{message:{content:JSON.stringify(delta)},finish_reason:'stop'}],usage:{prompt_tokens:420,completion_tokens:80,total_tokens:500}}}).catch(()=>{});
@@ -63,12 +64,12 @@ try{
     assert.equal(await page.locator('.rpg-body').evaluate(el=>el.scrollWidth>el.clientWidth+1),false);
     await page.setViewportSize({width:1440,height:1100});
     // Overlay always opens in the viewport center after dragging the launcher.
-    await page.getByRole('button',{name:'Закрыть',exact:true}).click();
+    await page.getByRole('button',{name:'Close',exact:true}).click();
     const orb=await page.locator('#rpg-moon').boundingBox();await page.mouse.move(orb.x+20,orb.y+20);await page.mouse.down();await page.mouse.move(150,180,{steps:8});await page.mouse.up();
     assert.equal(await page.locator('#rpg-framework').evaluate(el=>el.open),false);
     await page.locator('#rpg-moon').click();
     const dialog=await page.locator('#rpg-framework').boundingBox();assert.ok(Math.abs(dialog.x+dialog.width/2-720)<2);
-    await page.getByRole('button',{name:'Настройки',exact:true}).click();
+    await page.getByRole('button',{name:'Settings',exact:true}).click();
     await page.getByRole('button',{name:'OpenRouter',exact:true}).click();
     await page.waitForFunction(()=>document.querySelector('[name="modelList"]').options.length===120);
     await page.locator('[name="modelSearch"]').fill('MODEL 119');
@@ -86,48 +87,48 @@ try{
     assert.equal(await page.locator('.rpg-body').evaluate(el=>el.scrollWidth>el.clientWidth+1),false);
     await page.setViewportSize({width:1440,height:1100});
     modelsFail=true;
-    await page.getByRole('button',{name:'Загрузить модели',exact:false}).click();
+    await page.getByRole('button',{name:'Load models',exact:false}).click();
     await page.waitForFunction(()=>document.querySelector('#rpg-model-count').textContent.includes('401'));
     assert.equal(await page.locator('[name="model"]').inputValue(),'test/model-119');
     await page.locator('[name="aiMode"]').selectOption('profile');
     assert.equal(await page.locator('[name="modelList"]').isDisabled(),true);
     await page.locator('[name="aiMode"]').selectOption('custom');
-    await page.getByRole('button',{name:'Сохранить настройки',exact:true}).click();
+    await page.getByRole('button',{name:'Save settings',exact:true}).click();
     assert.equal(await page.evaluate(()=>fixture.context.extensionSettings.underphase_dnd.model),'test/model-119');
     // Restore the test processor endpoint and leave it unconfigured until the auto-update test.
     await page.locator('[name="aiUrl"]').fill(`${base}/mock/v1`);
     await page.locator('[name="model"]').fill('');
     await page.locator('[name="devMode"]').check();
     await page.locator('[name="section_inventory"]').uncheck();
-    await page.getByRole('button',{name:'Сохранить настройки',exact:true}).click();
+    await page.getByRole('button',{name:'Save settings',exact:true}).click();
     apiOffline=true;
-    await page.getByText('Необязательно: импорт из старого RPG API',{exact:true}).click();
-    await page.getByRole('button',{name:'Проверить API',exact:true}).click();
+    await page.getByText('Optional: import from the old RPG API',{exact:true}).click();
+    await page.getByRole('button',{name:'Test API',exact:true}).click();
     await page.waitForFunction(()=>fixture.context.chatMetadata.underphase_dnd.activity.some(e=>e.data?.diagnostics?.category==='network'));
     await page.getByRole('button',{name:'Dev',exact:true}).click();
     assert.match(await page.locator('.rpg-body').textContent(),/pageOrigin/);
     assert.match(await page.locator('.rpg-body').textContent(),/CORS_ORIGINS/);
     // Keep the RPG API offline for all gameplay checks.
     const explicitApiRequests=apiRequests;
-    await page.getByRole('button',{name:'История',exact:true}).click();
-    assert.equal(await page.locator('summary').filter({hasText:'Инвентарь'}).count(),0);
-    await page.getByRole('button',{name:'Мастерская',exact:true}).click();
+    await page.getByRole('button',{name:'Story',exact:true}).click();
+    assert.equal(await page.locator('summary').filter({hasText:'Inventory'}).count(),0);
+    await page.getByRole('button',{name:'Workshop',exact:true}).click();
     await page.locator('[name="trackerId"]').fill('test_moon');
     await page.locator('[name="trackerHtml"]').fill('<h2>Лунный резонанс</h2>{{charge}}<script>parent.hacked=true</script>');
-    await page.getByRole('button',{name:'Обновить пример',exact:true}).click();
+    await page.getByRole('button',{name:'Refresh preview',exact:true}).click();
     assert.equal(await page.evaluate(()=>window.hacked),undefined);
     await page.screenshot({path:resolve(root,'test-results/workshop.png')});
-    await page.getByRole('button',{name:'Сохранить',exact:true}).click();
+    await page.getByRole('button',{name:'Save',exact:true}).click();
     assert.equal(await page.evaluate(()=>fixture.context.chatMetadata.underphase_dnd.trackers.length),1);
     assert.deepEqual(await page.evaluate(()=>fixture.context.chatMetadata.underphase_dnd.trackerValues),{});
-    await page.getByRole('button',{name:'История',exact:true}).click();
+    await page.getByRole('button',{name:'Story',exact:true}).click();
     await page.setViewportSize({width:390,height:844});
     await page.screenshot({path:resolve(root,'test-results/mobile.png')});
     assert.equal(await page.locator('.rpg-body').evaluate(el=>el.scrollWidth>el.clientWidth+1),false);
-    await page.getByRole('button',{name:'Выбрать главного героя',exact:false}).click();
+    await page.getByRole('button',{name:'Select protagonist',exact:false}).click();
     await page.locator('[name="focusName"]').fill('Каэль');
     await page.locator('[name="focusId"]').selectOption('custom');
-    await page.getByRole('button',{name:'Выбрать',exact:true}).click();
+    await page.getByRole('button',{name:'Select',exact:true}).click();
     assert.equal(await page.evaluate(()=>fixture.context.chatMetadata.underphase_dnd.protagonist.name),'Каэль');
     // Automatically process a completed response once, retain state across unchanged events.
     await page.evaluate(()=>{fixture.context.extensionSettings.underphase_dnd.model='test-model';fixture.context.eventSource.emit('GENERATION_ENDED');});
@@ -141,7 +142,7 @@ try{
         const s=fixture.context.chatMetadata.underphase_dnd;
         s.pending={id:'legacy-rejected-batch',changes:[{owner_id:'selena',data:{personality:'Спокойна',goals:'Найти союзников'},expected_updated_at:null}],delta:{summary:'Обновление восстановлено'},processed:structuredClone(s.processed),previous:null};
     });
-    await page.getByRole('button',{name:'↻ Обновить',exact:true}).click();
+    await page.getByRole('button',{name:'↻ Update',exact:true}).click();
     await page.waitForFunction(()=>fixture.context.chatMetadata.underphase_dnd.pending===null);
     assert.equal(await page.evaluate(()=>fixture.context.chatMetadata.underphase_dnd.characters[0].personality.description),'Спокойна');
     assert.equal(await page.evaluate(()=>fixture.context.chatMetadata.underphase_dnd.characters[0].goals.description),'Найти союзников');
@@ -157,15 +158,35 @@ try{
     await page.evaluate(async()=>{fixture.context.chatMetadata=JSON.parse(JSON.stringify(fixture.context.chatMetadata));await fixture.context.eventSource.emit('CHAT_CHANGED');});
     assert.equal(await page.evaluate(()=>fixture.context.chatMetadata.underphase_dnd.characters[0].experience),8500);
     assert.equal(await page.evaluate(()=>fixture.context.chatMetadata.underphase_dnd.localChecks[0].id),localRoll.id);
-    await page.getByRole('button',{name:'Персонажи',exact:true}).click();
-    await page.getByRole('button',{name:'＋ Персонаж',exact:true}).click();
+    await page.getByRole('button',{name:'Characters',exact:true}).click();
+    await page.getByRole('button',{name:'＋ Character',exact:true}).click();
     await page.locator('[name="characterJson"]').fill(JSON.stringify({name:'Местный спутник',skills:{watch:{bonus:2}}}));
-    await page.getByRole('button',{name:'Сохранить персонажа',exact:true}).click();
+    await page.getByRole('button',{name:'Save character',exact:true}).click();
     await page.waitForFunction(()=>fixture.context.chatMetadata.underphase_dnd.characters.length===2);
     const recalled=await page.evaluate(async()=>{const c=fixture.context.chatMetadata.underphase_dnd.characters[1];return JSON.parse(await fixture.tools.rpg_recall.action({query:c.name,actor_id:c.owner_id}));});
     assert.equal(recalled.character.name,'Местный спутник');
     assert.equal(recalled.character.strength,10);
     assert.equal(apiRequests,explicitApiRequests);
+    // Memory errors retain old state and export usable, redacted diagnostics on mobile.
+    invalidAI=true;
+    await page.evaluate(()=>{fixture.context.extensionSettings.underphase_dnd.aiKey='private-ui-key';fixture.context.chat[0].mes='Trigger a malformed response';fixture.context.eventSource.emit('MESSAGE_EDITED');});
+    await page.waitForFunction(()=>fixture.context.chatMetadata.underphase_dnd.activity.some(x=>x.data?.diagnostics?.stage==='model-json'));
+    assert.equal(await page.evaluate(()=>fixture.context.chatMetadata.underphase_dnd.characters[0].experience),8500);
+    assert.equal(await page.evaluate(()=>fixture.context.chatMetadata.underphase_dnd.pending),null);
+    await page.getByRole('button',{name:'Dev',exact:true}).click();
+    await page.evaluate(()=>Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async()=>{throw new Error('Not allowed');}}}));
+    await page.getByRole('button',{name:'Copy error report',exact:true}).click();
+    const report=await page.locator('#rpg-report-fallback').inputValue();
+    assert.ok(report.includes('model-json'));assert.ok(report.includes('bad JSON'));assert.ok(!report.includes('private-ui-key'));
+    const downloadEvent=page.waitForEvent('download');
+    await page.getByRole('button',{name:'Download report',exact:true}).click();
+    const download=await downloadEvent;
+    const downloaded=JSON.parse(await readFile(await download.path(),'utf8'));
+    assert.equal(downloaded.version,'0.2.1');
+    assert.ok(downloaded.activity.some(x=>x.data?.diagnostics?.operation==='memory-update'));
+    await page.screenshot({path:resolve(root,'test-results/dev-mobile.png')});
+    assert.equal(await page.locator('.rpg-body').evaluate(el=>el.scrollWidth>el.clientWidth+1),false);
+    invalidAI=false;
     // A delayed completion must not leak into a new chat.
     delayAI=true;
     await page.evaluate(()=>{fixture.context.chat[0].mes='Новое действие';fixture.context.eventSource.emit('MESSAGE_EDITED');});

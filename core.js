@@ -1,7 +1,7 @@
 import {normalizeCharacterData} from './character-data.js';
 export const KEY = 'underphase_dnd';
 export const CHARACTER_FIELDS = ['name','race','character_class','inventory','equipment','description','personality','background','goals','traits','relationships','current_state','memories','notes','tags','is_player','is_temporary','level','experience','armor_class','max_hp','current_hp','temporary_hp','strength','dexterity','constitution','intelligence','wisdom','charisma','general_condition','buffs','debuffs','active_skills','skills','spells','spell_slots'];
-export const SECTIONS = {vitals:'Здоровье и состояние',progress:'Уровень и опыт',attributes:'Характеристики',skills:'Навыки',inventory:'Инвентарь',equipment:'Экипировка',spells:'Заклинания',effects:'Эффекты',biography:'Личность и история',scene:'Локация, время и погода',party:'Отряд'};
+export const SECTIONS = {vitals:'Health and condition',progress:'Level and experience',attributes:'Attributes',skills:'Skills',inventory:'Inventory',equipment:'Equipment',spells:'Spells',effects:'Effects',biography:'Personality and history',scene:'Location, time and weather',party:'Party'};
 export const clone = value => structuredClone(value);
 export function uuid() {
     // randomUUID is unavailable on plain HTTP LAN origins; getRandomValues is available.
@@ -17,14 +17,14 @@ export const pathValue = (object, path) => String(path ?? '').split('.').reduce(
 export function parseJson(text) {
     const clean = String(text).trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
     return JSON.parse(clean, (key,value) => {
-        if (['__proto__','prototype','constructor'].includes(key)) throw new Error('Недопустимый ключ JSON');
+        if (['__proto__','prototype','constructor'].includes(key)) throw new Error('Unsafe JSON key');
         return value;
     });
 }
 
 export function newState() {
     return {version:1, scopeId:uuid(), protagonist:null, characters:[],
-        scene:{location:'Неизвестно',time:'Неизвестно',weather:'Неизвестно',party:{name:'',leader:'',members:[]}},
+        scene:{location:'Unknown',time:'Unknown',weather:'Unknown',party:{name:'',leader:'',members:[]}},
         summary:'', facts:{}, trackers:[], trackerValues:{}, previous:null, processed:[], pending:null,
         sections:Object.fromEntries(Object.keys(SECTIONS).map(k=>[k,true])), receipts:[], activity:[], turns:0};
 }
@@ -55,25 +55,25 @@ export function selectFacts(facts, query, budget=6000) {
 }
 
 export function validateDelta(delta) {
-    if (!safeObject(delta)) throw new Error('ИИ должна вернуть JSON-объект');
+    if (!safeObject(delta)) throw new Error('AI must return a JSON object');
     const allowed = ['summary','facts','forget','scene','characters','trackers'];
-    if (Object.keys(delta).some(k=>!allowed.includes(k))) throw new Error('Неизвестные поля ответа обработчика');
-    if (delta.summary !== undefined && (typeof delta.summary !== 'string' || delta.summary.length>12000)) throw new Error('Некорректная сводка');
-    if (delta.facts !== undefined && (!Array.isArray(delta.facts) || delta.facts.length>150 || delta.facts.some(f=>!safeObject(f)||typeof f.id!=='string'||!f.id||typeof f.text!=='string'||f.text.length>4000))) throw new Error('Некорректные факты');
-    if (delta.forget !== undefined && (!Array.isArray(delta.forget)||delta.forget.some(id=>typeof id!=='string'))) throw new Error('Некорректный список удалённых фактов');
-    if (delta.scene !== undefined && (!safeObject(delta.scene)||Object.keys(delta.scene).some(k=>!['location','time','weather','party'].includes(k)))) throw new Error('Некорректная сцена');
+    if (Object.keys(delta).some(k=>!allowed.includes(k))) throw new Error('Unknown processor response fields');
+    if (delta.summary !== undefined && (typeof delta.summary !== 'string' || delta.summary.length>12000)) throw new Error('Invalid summary: expected text up to 12000 characters');
+    if (delta.facts !== undefined && (!Array.isArray(delta.facts) || delta.facts.length>150 || delta.facts.some(f=>!safeObject(f)||typeof f.id!=='string'||!f.id||typeof f.text!=='string'||f.text.length>4000))) throw new Error('Invalid facts: expected up to 150 objects with id and text (max 4000 characters each)');
+    if (delta.forget !== undefined && (!Array.isArray(delta.forget)||delta.forget.some(id=>typeof id!=='string'))) throw new Error('Invalid forget list: expected string IDs');
+    if (delta.scene !== undefined && (!safeObject(delta.scene)||Object.keys(delta.scene).some(k=>!['location','time','weather','party'].includes(k)))) throw new Error('Invalid scene: only location, time, weather and party are allowed');
     if (delta.scene) {
-        for (const key of ['location','time','weather']) if (delta.scene[key]!==undefined && typeof delta.scene[key]!=='string') throw new Error('Сцена должна содержать текст');
+        for (const key of ['location','time','weather']) if (delta.scene[key]!==undefined && typeof delta.scene[key]!=='string') throw new Error('Scene location, time and weather must be text');
         const p=delta.scene.party;
-        if(p!==undefined && (!safeObject(p)||typeof p.name!=='string'||typeof p.leader!=='string'||!Array.isArray(p.members)||p.members.some(x=>typeof x!=='string'))) throw new Error('Некорректный отряд');
+        if(p!==undefined && (!safeObject(p)||Object.keys(p).some(k=>!['name','leader','members'].includes(k))||['name','leader'].some(k=>p[k]!==undefined&&typeof p[k]!=='string')||p.members!==undefined&&(!Array.isArray(p.members)||p.members.some(x=>typeof x!=='string')))) throw new Error('Invalid scene.party: expected name, leader and members');
     }
-    if (delta.characters !== undefined && (!Array.isArray(delta.characters)||delta.characters.length>100)) throw new Error('Некорректный список персонажей');
+    if (delta.characters !== undefined && (!Array.isArray(delta.characters)||delta.characters.length>100)) throw new Error('Invalid characters: expected an array of up to 100 patches');
     for (const c of delta.characters ?? []) {
-        if(!safeObject(c)||!safeObject(c.data)||Object.keys(c.data).some(k=>!CHARACTER_FIELDS.includes(k))) throw new Error('Неизвестное поле персонажа');
-        if(c.owner_id!==undefined && typeof c.owner_id!=='string') throw new Error('Некорректный ID персонажа');
+        if(!safeObject(c)||!safeObject(c.data)||Object.keys(c.data).some(k=>!CHARACTER_FIELDS.includes(k))) throw new Error('Unknown character field');
+        if(c.owner_id!==undefined && typeof c.owner_id!=='string') throw new Error('Invalid character owner_id: expected a string');
         normalizeCharacterData(c.data);
     }
-    if(delta.trackers!==undefined && !safeObject(delta.trackers)) throw new Error('Некорректные значения треккеров');
+    if(delta.trackers!==undefined && !safeObject(delta.trackers)) throw new Error('Invalid trackers: expected an object keyed by tracker ID');
     return delta;
 }
 
@@ -81,10 +81,10 @@ export function prepareChanges(delta, state) {
     const seen=new Set();
     return (delta.characters ?? []).map(c=> {
         const existing=c.owner_id?state.characters.find(x=>x.owner_id===c.owner_id):state.characters.find(x=>x.name===c.data.name);
-        if(c.owner_id && !existing) throw new Error('ИИ указала персонажа вне текущего чата');
-        if(!existing && !c.data.name) throw new Error('Новому персонажу нужно имя');
+        if(c.owner_id && !existing) throw new Error('AI referenced a character outside the current chat');
+        if(!existing && !c.data.name) throw new Error('A new character needs a name');
         const identity=existing?.owner_id ?? c.data.name;
-        if(seen.has(identity)) throw new Error('Повтор персонажа в одном обновлении');
+        if(seen.has(identity)) throw new Error('Duplicate character in one update');
         seen.add(identity);
         return {owner_id:existing?.owner_id ?? uuid(),data:normalizeCharacterData(c.data,existing),expected_updated_at:existing?.updated_at ?? null};
     });
@@ -92,7 +92,7 @@ export function prepareChanges(delta, state) {
 
 export function applyDelta(state, delta) {
     if(delta.summary!==undefined) state.summary=delta.summary;
-    if(delta.scene) state.scene={...state.scene,...delta.scene};
+    if(delta.scene) state.scene={...state.scene,...delta.scene,...(delta.scene.party?{party:{...state.scene.party,...delta.scene.party}}:{})};
     for(const id of delta.forget ?? []) delete state.facts[id];
     for(const f of delta.facts ?? []) state.facts[f.id]={id:f.id,text:f.text,pinned:!!f.pinned};
     for(const [id,values] of Object.entries(delta.trackers ?? {})) {

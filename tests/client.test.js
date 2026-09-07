@@ -8,7 +8,7 @@ test('network errors explain phone loopback and CORS without exposing credential
     catch(error){
         assert.equal(error.diagnostics.httpStatus,null);
         assert.equal(error.diagnostics.category,'network');
-        assert.ok(error.diagnostics.hints.some(h=>h.includes('телефоне')));
+        assert.ok(error.diagnostics.hints.some(h=>h.includes('phone')));
         assert.ok(error.diagnostics.hints.some(h=>h.includes('CORS_ORIGINS')));
         assert.equal(JSON.stringify(error).includes('private-test-key'),false);
     }
@@ -20,5 +20,5 @@ test('authentication and wrong-server responses are distinct from network errors
     await assert.rejects(()=>backend({backendUrl:'http://localhost:8000'},'/characters'),error=>error.diagnostics.category==='invalid-response');
 });
 test('a key pasted into the address field gets an actionable error',async()=>{
-    await assert.rejects(()=>backend({backendUrl:'not-a-url'},'/characters'),/Ключ.*отдельное поле/);
+    await assert.rejects(()=>backend({backendUrl:'not-a-url'},'/characters'),/Enter the key in RPG API key/);
 });

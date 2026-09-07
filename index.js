@@ -1,3 +1,4 @@
+import {sanitize,errorReport,supportReport} from './diagnostics.js';
 import {initializeLocal,syncLocal,resolveLocalCheck} from './local-store.js';
 import {migrateDefaultPrompts} from './prompt-migrations.js';
 import {KEY,CHARACTER_FIELDS,clone,uuid,newState,snapshot,reconcileMessages,selectFacts,parseJson,validateDelta,prepareChanges,applyDelta} from './core.js';
@@ -13,7 +14,13 @@ const settings=()=>ctx().extensionSettings[KEY];
 function saveSettings(){ctx().saveSettingsDebounced();inject();}
 function same(state){return state===active && (ctx().getCurrentChatId?.()??ctx().chatId)===activeChat;}
 async function save(state=active){if(!state||!same(state))return;ctx().chatMetadata[KEY]=state;await ctx().saveMetadata();inject();}
-function log(title,data){if(!active||!settings().devMode)return;active.activity.push({at:new Date().toLocaleTimeString(),title,data});active.activity=active.activity.slice(-100);ctx().saveMetadataDebounced?.();}
+function log(title,data,state=active){
+    if(!state||(!settings().devMode&&title!=='Error'))return;
+    state.activity.push({at:new Date().toISOString(),title,data:sanitize(data,settings())});
+    state.activity=state.activity.slice(settings().devMode?-60:-10);
+    if(same(state))ctx().saveMetadataDebounced?.();
+}
+
 function ensureMessageIds(){let changed=false;for(const m of ctx().chat){m.extra??={};if(!m.extra[KEY]?.id){m.extra[KEY]={id:uuid()};changed=true;}}if(changed)ctx().saveChat();}
 function currentMessages(){ensureMessageIds();return reconcileMessages(ctx().chat,[]).current;}
 function prepared(){return settings().aiMode==='profile'?!!settings().profileId:!!(settings().aiUrl&&settings().model);}
@@ -67,7 +74,7 @@ function schedule(){
 async function completePending(state){
     const pending=state.pending;if(!pending)return;
     if(normalizePendingChanges(pending,state.characters)){
-        log('Исправлен формат данных персонажа','Текст и списки приведены к формату персонажа без повторного запроса ИИ.');
+        log('Normalized character data','Text and lists normalized without another AI request.');
         await save(state);
     }
     if(pending.changes.length){
@@ -84,8 +91,8 @@ async function completePending(state){
 async function process(){
     if(running){rerun=true;return running;}
     if(!active)return;
-    if(!settings().enabled)throw new Error('Обработка выключена в настройках');
-    if(!prepared())throw new Error('Настрой отдельную ИИ во вкладке «Настройки»');
+    if(!settings().enabled)throw new Error('Processing is disabled in Settings');
+    if(!prepared())throw new Error('Configure the processing AI in Settings');
     if(generating){rerun=true;return;}
     const state=active;
     running=(async()=>{
@@ -101,15 +108,15 @@ async function process(){
                 for(const change of changes){const length=JSON.stringify(change).length;if(batch.length && size+length>settings().eventBudget)break;batch.push(change);size+=length;}
                 // Preserve entire events; budget is soft for an unusually long single message.
                 const transcript=JSON.stringify(current);
-                ui.status(`Обновляю память · ${batch.length} событий…`);
+                ui.status(`Updating memory · ${batch.length} events…`);
                 const aiTrackers=state.trackers.filter(t=>t.fields.some(f=>f.source==='ai')).map(t=>({id:t.id,prompt:t.prompt,fields:t.fields.filter(f=>f.source==='ai').map(({id,label,type,max})=>({id,label,type,max})),current:state.trackerValues[t.id]??{}}));
                 const input={events:batch,recent:current.slice(-2),summary:state.summary,
                     facts:selectFacts(state.facts,JSON.stringify(batch),settings().memoryBudget*2),
                     characters:relevantCharacters(state,JSON.stringify(batch)),characterIndex:compactCharacters(state),characterFields:CHARACTER_FIELDS,scene:state.scene,trackers:aiTrackers,
                     receipts:state.receipts.slice(-10)};
-                const delta=validateDelta(await askAI(settings(),`${settings().processorPrompt}\n${CHARACTER_DATA_RULES}`,input,{signal:controller.signal,onUsage:usage=>log('Обработка состояния',usage)}));
+                const delta=await askAI(settings(),`${settings().processorPrompt}\n${CHARACTER_DATA_RULES}\nAll character data is stored locally. Return only changed fields; scene.party can be a partial object. Preserve the story language.`,input,{signal:controller.signal,onUsage:usage=>log('Memory processing',usage,state),validate:value=>{validateDelta(value);prepareChanges(value,state);return value;}});
                 if(!same(state)||controller.signal.aborted)return;
-                if(JSON.stringify(currentMessages())!==transcript){log('Изменения во время обработки','Устаревший ответ ИИ отброшен');continue;}
+                if(JSON.stringify(currentMessages())!==transcript){log('Messages changed during processing','Discarded an outdated AI response');continue;}
                 const next=new Map(state.processed.map(m=>[m.id,m]));
                 for(const change of batch){if(change.kind==='deleted')next.delete(change.id);else{const {kind,previous,...message}=change;next.set(change.id,message);}}
                 const processed=current.filter(m=>next.has(m.id)).map(m=>next.get(m.id));
@@ -118,10 +125,11 @@ async function process(){
                 state.pending={id:uuid(),changes:prepareChanges(delta,state),delta,processed,previous:snapshot(state)};
                 await save(state);await completePending(state);ui.refresh();
             }
-            if(same(state))ui.status('Память и треккеры обновлены');
+            if(same(state))ui.status('Memory and trackers updated');
         }catch(error){
             if(error.name!=='AbortError'){
-                if(error.status===409 && same(state)){state.pending=null;await save(state);await refreshCharacters(state);}
+                error.diagnostics={...error.diagnostics,operation:'memory-update',pendingId:state.pending?.id??null,processedMessages:state.processed.length,characterCount:state.characters.length};
+                if(!same(state)){log('Error',errorReport(error,settings()),state);return;}
                 throw error;
             }
         }finally{controller=null;ui.busy(false);running=null;if(rerun){rerun=false;schedule();}}
@@ -132,24 +140,36 @@ async function process(){
 function eventIdentity(){ensureMessageIds();const messages=ctx().chat.filter(m=>m.is_user&&!m.is_system);return messages.at(-1)?.extra?.[KEY]?.id??`opening-${active.scopeId}`;}
 function registerTools(){
     const context=ctx();
-    context.registerFunctionTool({name:'rpg_check',displayName:'Проверка RPG',description:'Resolve a check or roll using the extension’s local rules engine. Never invent results. Reuse check_key for the same action and target. Supply difficulty justification before rolling. Stored passives may resolve covered actions automatically.',
+    const register=tool=>{
+        const action=tool.action;
+        context.registerFunctionTool({...tool,action:async args=>{
+            const state=active;
+            try{return await action(args);}catch(error){
+                error.diagnostics={...error.diagnostics,operation:tool.name};
+                log('Error',errorReport(error,settings()),state);
+                if(same(state))ui.status(error.message,true);
+                throw error;
+            }
+        }});
+    };
+    register({name:'rpg_check',displayName:'RPG check',description:'Resolve a check or roll using the extension’s local rules engine. Never invent results. Reuse check_key for the same action and target. Supply difficulty justification before rolling. Stored passives may resolve covered actions automatically.',
         parameters:{type:'object',properties:{check_key:{type:'string',description:'Stable action + target key; never change to retry'},reason:{type:'string'},actor_id:{type:'string',description:'owner_id from RPG context; omit for a world event'},formula:{type:'string',description:'NdS, e.g. 1d20, 1d100, 2d6; no arithmetic'},target_id:{type:'string',description:'Stored target character owner_id'},difficulty_path:{type:'string',description:'Code reads stored target difficulty: armor_class or notes.checks.lock.dc; omit difficulty when using this'},difficulty:{type:'integer'},difficulty_reason:{type:'string'},comparison:{type:'string',enum:['gte','lte']},mode:{type:'string',enum:['normal','advantage','disadvantage']},attribute:{type:'string',enum:['strength','dexterity','constitution','intelligence','wisdom','charisma']},attribute_rule:{type:'string',enum:['none','raw','d20']},bonus_paths:{type:'array',items:{type:'string'},description:'Stored integer paths such as skills.lockpick.bonus; no invented bonuses'},resolution:{type:'string',enum:['roll','automatic','impossible']},passive_path:{type:'string',description:'Stored passive object with automatic_success and actions covering check_key'}},required:['check_key','reason','formula'],additionalProperties:false},
         shouldRegister:()=>!!active&&settings().enabled,stealth:false,
         formatMessage:args=>`${args.formula}: ${args.reason}`,
         action:async args=>{
-            const state=active;if(!state)throw new Error('Нет активного чата');
+            const state=active;if(!state)throw new Error('No active chat');
             const result=resolveLocalCheck(state,args,eventIdentity());
             if(same(state)){if(!state.receipts.some(r=>r.id===result.id))state.receipts.push(result);state.receipts=state.receipts.slice(-100);await save(state);ui.refresh();}
             return JSON.stringify(result);
         }});
-    context.registerFunctionTool({name:'rpg_recall',displayName:'Память истории',description:'Retrieve durable story facts or a full RPG character when compact context is insufficient.',parameters:{type:'object',properties:{query:{type:'string'},actor_id:{type:'string'}},required:['query'],additionalProperties:false},shouldRegister:()=>!!active&&settings().enabled,stealth:false,formatMessage:()=> 'Вспоминаю историю…',action:async({query,actor_id})=>{
-        if(!active)throw new Error('Нет активного чата');
+    register({name:'rpg_recall',displayName:'Story recall',description:'Retrieve durable story facts or a full RPG character when compact context is insufficient.',parameters:{type:'object',properties:{query:{type:'string'},actor_id:{type:'string'}},required:['query'],additionalProperties:false},shouldRegister:()=>!!active&&settings().enabled,stealth:false,formatMessage:()=> 'Recalling story facts…',action:async({query,actor_id})=>{
+        if(!active)throw new Error('No active chat');
         return JSON.stringify({facts:selectFacts(active.facts,query,12000),...(actor_id?{character:active.characters.find(c=>c.owner_id===actor_id)??null}:{})});
     }});
 }
 
 async function saveCharacter(id,data){
-    const state=active;if(running||state.pending)throw new Error('Дождись завершения синхронизации перед ручным редактированием');
+    const state=active;if(running||state.pending)throw new Error('Wait for the memory update to finish before editing characters');
     const delta=validateDelta({characters:[{...(id?{owner_id:id}:{}),data}]});
     state.pending={id:uuid(),delta,changes:prepareChanges(delta,state),processed:clone(state.processed),previous:snapshot(state)};
     await save(state);await completePending(state);
@@ -159,13 +179,14 @@ async function init(){
     const context=ctx();context.extensionSettings[KEY]={...defaults,...context.extensionSettings[KEY]};
     if(migrateDefaultPrompts(context.extensionSettings[KEY]))context.saveSettingsDebounced();
     ui=new FrameworkUI({state:()=>active,settings,save,saveSettings,parse:parseJson,log,process,refreshCharacters,
+        supportReport:()=>supportReport(active,settings(),context.isToolCallingSupported?.()??false),
         toolsSupported:()=>context.isToolCallingSupported?.()??false,
         profiles:()=>ctx().extensionSettings.connectionManager?.profiles??[],userName:()=>ctx().name1,
         resetPrompts:()=>{Object.assign(settings(),{narratorPrompt:NARRATOR_PROMPT,scenePrompt:SCENE_PROMPT,processorPrompt:PROCESSOR_PROMPT,builderPrompt:BUILDER_PROMPT});saveSettings();},
-        testBackend:async()=>{const result=await backend(settings(),'/characters?scope_id=connection-test&limit=1');log('Подключение RPG API',{httpStatus:200,pageOrigin:globalThis.location?.origin});return result;},
+        testBackend:async()=>{const result=await backend(settings(),'/characters?scope_id=connection-test&limit=1');log('RPG API connection',{httpStatus:200,pageOrigin:globalThis.location?.origin});return result;},
         testAI:()=>askAI(settings(),'Return only JSON: {"ok":true}',{test:true}),
         suggestFocus:()=>askAI(settings(),'Suggest ONE protagonist for this story. The user is not the default hero. Return JSON {"name":"...","reason":"..."}.',{summary:active.summary,characters:compactCharacters(active),recent:ctx().chat.slice(-6).map(m=>({name:m.name,text:m.mes}))}),
-        buildTracker:request=>askAI(settings(),settings().builderPrompt,{request},{onUsage:u=>log('Конструктор',u)}),
+        buildTracker:request=>askAI(settings(),settings().builderPrompt,{request},{onUsage:u=>log('Tracker builder',u)}),
         saveCharacter,
         importCharacter:async id=>{const state=active;const c=await backend(settings(),`/characters/${encodeURIComponent(id.trim())}`);if(!same(state))return;await saveCharacter(null,Object.fromEntries(CHARACTER_FIELDS.map(k=>[k,c[k]])));},
         saveMemory:async(summary,facts)=>{const delta=validateDelta({summary,facts});active.facts={};applyDelta(active,delta);await save();},
@@ -182,7 +203,7 @@ async function init(){
     for(const key of ['MESSAGE_RECEIVED','MESSAGE_EDITED','MESSAGE_UPDATED','MESSAGE_SWIPED','MESSAGE_DELETED'])if(events[key])source.on(events[key],()=>{inject();schedule();});
     source.on(events.GENERATION_STARTED,(type,options,dryRun)=>{if(dryRun||type==='quiet')return;generating=true;inject();});
     for(const key of ['GENERATION_ENDED','GENERATION_STOPPED'])if(events[key])source.on(events[key],()=>{generating=false;schedule();});
-    const entry=document.createElement('div');entry.className='extension_container';const launch=document.createElement('button');launch.className='menu_button';launch.textContent='☾ D&D Framework · Настройки';launch.addEventListener('click',()=>{ui.tab='settings';ui.open();});entry.append(launch);document.querySelector('#extensions_settings2, #extensions_settings')?.append(entry);
+    const entry=document.createElement('div');entry.className='extension_container';const launch=document.createElement('button');launch.className='menu_button';launch.textContent='☾ D&D Framework · Settings';launch.addEventListener('click',()=>{ui.tab='settings';ui.open();});entry.append(launch);document.querySelector('#extensions_settings2, #extensions_settings')?.append(entry);
     await activate();
 }
 

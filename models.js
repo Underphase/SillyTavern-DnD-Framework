@@ -2,7 +2,7 @@
 export function modelsEndpoint(address) {
     const url = new URL(address.trim());
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
-        throw new Error('Укажи адрес HTTP(S) API без логина и пароля в URL');
+        throw new Error('Use an HTTP(S) API address without credentials in the URL');
     }
     let path = url.pathname.replace(/\/+$/, '').replace(/\/chat\/completions$/, '').replace(/\/models$/, '');
     if (url.hostname === 'openrouter.ai' && (!path || path === '/api')) path = '/api/v1';
@@ -14,7 +14,7 @@ export function modelsEndpoint(address) {
 
 export function normalizeModels(payload) {
     const entries = Array.isArray(payload) ? payload : payload?.data;
-    if (!Array.isArray(entries)) throw new Error('API не вернул список моделей в поле data');
+    if (!Array.isArray(entries)) throw new Error('API did not return a model list in data');
     const models = new Map();
     for (const entry of entries) {
         if (typeof entry?.id !== 'string' || !entry.id.trim()) continue;
@@ -35,7 +35,7 @@ export async function listModels(address, key, { signal } = {}) {
         headers: { Accept: 'application/json', ...(key.trim() ? { Authorization: `Bearer ${key.trim()}` } : {}) },
     });
     if (!response.ok) {
-        throw new Error(`Список моделей: HTTP ${response.status}. ${response.status === 401 || response.status === 403 ? 'Проверь ключ ИИ и доступ к провайдеру.' : 'Проверь адрес API и поддержку GET /models.'}`);
+        throw new Error(`List models: HTTP ${response.status}. ${response.status === 401 || response.status === 403 ? 'Check the AI key and provider access.' : 'Check the API address and GET /models support.'}`);
     }
     return normalizeModels(await response.json());
 }
