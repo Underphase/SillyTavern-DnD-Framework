@@ -15,8 +15,9 @@ const {chromium}=await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE).href)
 const browser=await chromium.launch({headless:true,...(process.env.BROWSER_CHANNEL?{channel:process.env.BROWSER_CHANNEL}:{})});
 const page=await browser.newPage({viewport:{width:1440,height:1100}});
 const errors=[];page.on('pageerror',error=>errors.push(error.message));
-let records=[sampleCharacter()],aiCalls=0,resolveAI,delayAI=false,apiOffline=false;
+let records=[sampleCharacter()],aiCalls=0,resolveAI,delayAI=false,apiOffline=false,apiRequests=0;
 await page.route('**/api/**',async route=>{
+    apiRequests++;
     if(apiOffline)return route.abort('connectionfailed');
     const request=route.request(),url=new URL(request.url());
     if(url.pathname==='/api/characters/sync'){
@@ -100,12 +101,14 @@ try{
     await page.locator('[name="section_inventory"]').uncheck();
     await page.getByRole('button',{name:'Сохранить настройки',exact:true}).click();
     apiOffline=true;
+    await page.getByText('Необязательно: импорт из старого RPG API',{exact:true}).click();
     await page.getByRole('button',{name:'Проверить API',exact:true}).click();
     await page.waitForFunction(()=>fixture.context.chatMetadata.underphase_dnd.activity.some(e=>e.data?.diagnostics?.category==='network'));
     await page.getByRole('button',{name:'Dev',exact:true}).click();
     assert.match(await page.locator('.rpg-body').textContent(),/pageOrigin/);
     assert.match(await page.locator('.rpg-body').textContent(),/CORS_ORIGINS/);
-    apiOffline=false;
+    // Keep the RPG API offline for all gameplay checks.
+    const explicitApiRequests=apiRequests;
     await page.getByRole('button',{name:'История',exact:true}).click();
     assert.equal(await page.locator('summary').filter({hasText:'Инвентарь'}).count(),0);
     await page.getByRole('button',{name:'Мастерская',exact:true}).click();
@@ -143,6 +146,26 @@ try{
     assert.equal(await page.evaluate(()=>fixture.context.chatMetadata.underphase_dnd.characters[0].personality.description),'Спокойна');
     assert.equal(await page.evaluate(()=>fixture.context.chatMetadata.underphase_dnd.characters[0].goals.description),'Найти союзников');
     assert.equal(aiCalls,1);
+    // Native tool works with the backend offline, preserves the result, and rejects rerolls.
+    const localRoll=await page.evaluate(async()=>JSON.parse(await fixture.tools.rpg_check.action({check_key:'test:door',reason:'Открыть дверь',formula:'1d20',actor_id:'selena',difficulty:12,difficulty_reason:'Замок'})));
+    assert.equal(localRoll.random_source,'crypto.getRandomValues');
+    assert.ok(localRoll.total>=1&&localRoll.total<=20);
+    const repeated=await page.evaluate(async()=>JSON.parse(await fixture.tools.rpg_check.action({check_key:'test:door',reason:'Повтор',formula:'1d100',actor_id:'selena',difficulty:1,difficulty_reason:'Легко'})));
+    assert.deepEqual(repeated,localRoll);
+    assert.equal(apiRequests,explicitApiRequests);
+    // Re-open the same saved chat, retaining migrated characters and the full ledger.
+    await page.evaluate(async()=>{fixture.context.chatMetadata=JSON.parse(JSON.stringify(fixture.context.chatMetadata));await fixture.context.eventSource.emit('CHAT_CHANGED');});
+    assert.equal(await page.evaluate(()=>fixture.context.chatMetadata.underphase_dnd.characters[0].experience),8500);
+    assert.equal(await page.evaluate(()=>fixture.context.chatMetadata.underphase_dnd.localChecks[0].id),localRoll.id);
+    await page.getByRole('button',{name:'Персонажи',exact:true}).click();
+    await page.getByRole('button',{name:'＋ Персонаж',exact:true}).click();
+    await page.locator('[name="characterJson"]').fill(JSON.stringify({name:'Местный спутник',skills:{watch:{bonus:2}}}));
+    await page.getByRole('button',{name:'Сохранить персонажа',exact:true}).click();
+    await page.waitForFunction(()=>fixture.context.chatMetadata.underphase_dnd.characters.length===2);
+    const recalled=await page.evaluate(async()=>{const c=fixture.context.chatMetadata.underphase_dnd.characters[1];return JSON.parse(await fixture.tools.rpg_recall.action({query:c.name,actor_id:c.owner_id}));});
+    assert.equal(recalled.character.name,'Местный спутник');
+    assert.equal(recalled.character.strength,10);
+    assert.equal(apiRequests,explicitApiRequests);
     // A delayed completion must not leak into a new chat.
     delayAI=true;
     await page.evaluate(()=>{fixture.context.chat[0].mes='Новое действие';fixture.context.eventSource.emit('MESSAGE_EDITED');});

@@ -1,3 +1,4 @@
+import {initializeLocal,syncLocal,resolveLocalCheck} from './local-store.js';
 import {migrateDefaultPrompts} from './prompt-migrations.js';
 import {KEY,CHARACTER_FIELDS,clone,uuid,newState,snapshot,reconcileMessages,selectFacts,parseJson,validateDelta,prepareChanges,applyDelta} from './core.js';
 import {NARRATOR_PROMPT,PROCESSOR_PROMPT,BUILDER_PROMPT,SCENE_PROMPT} from './prompts.js';
@@ -29,16 +30,13 @@ function inject(){
     const query=context.chat.slice(-3).map(m=>m.mes).join('\n');
     const focus=active.protagonist?`Narrative focus: ${active.protagonist.name}. Focus does not change character ownership, presence or scene pacing.`:'No selected protagonist. Share focus among established scene participants; preserve their assigned control.';
     const material={scope:active.scopeId,focus,scene:active.scene,summary:active.summary,knownCharacters:compactCharacters(active),facts:selectFacts(active.facts,query,settings().memoryBudget)};
-    const prompt=`${settings().narratorPrompt}\n${settings().scenePrompt}\nKnown characters below are a registry, not a list of current scene participants or permission to control them.\n${JSON.stringify(material)}\n${context.isToolCallingSupported?.()?'Use rpg_check for unresolved checks.':'Tool calling is unavailable. Do not fabricate dice results; leave uncertain checks unresolved until tools are enabled.'}`;
+    const prompt=`${settings().narratorPrompt}\nStorage and checks run locally in this extension. References to RPG backend/API in these instructions mean the local character store and rpg_check tool; no external RPG server is needed.\n${settings().scenePrompt}\nKnown characters below are a registry, not a list of current scene participants or permission to control them.\n${JSON.stringify(material)}\n${context.isToolCallingSupported?.()?'Use rpg_check for unresolved checks.':'Tool calling is unavailable. Do not fabricate dice results; leave uncertain checks unresolved until tools are enabled.'}`;
     context.setExtensionPrompt(KEY,prompt,1,0,false,0);
 }
 
 async function refreshCharacters(state=active){
     if(!state)return;
-    const before=state.characters,characters=[];
-    for(let offset=0;;offset+=100){const page=await backend(settings(),`/characters?scope_id=${encodeURIComponent(state.scopeId)}&offset=${offset}&limit=100`);characters.push(...page);if(page.length<100)break;}
-    if(!same(state)||state.characters!==before)return;
-    state.characters=characters;await save(state);ui?.refresh();
+    initializeLocal(state);await save(state);ui?.refresh();
 }
 
 async function activate(){
@@ -55,7 +53,7 @@ async function activate(){
         if(settings().template){state.sections={...state.sections,...clone(settings().template.sections)};state.trackers=clone(settings().template.trackers);}
         context.chatMetadata[KEY]=state;
     }
-    active=state;ensureMessageIds();await save(state);ui?.refresh();
+    initializeLocal(state);active=state;ensureMessageIds();await save(state);ui?.refresh();
     refreshCharacters(state).catch(error=>{if(same(state))ui?.error(error);});
     schedule();
 }
@@ -69,13 +67,12 @@ function schedule(){
 async function completePending(state){
     const pending=state.pending;if(!pending)return;
     if(normalizePendingChanges(pending,state.characters)){
-        log('Исправлен формат данных персонажа','Текст и списки приведены к формату API без повторного запроса ИИ.');
+        log('Исправлен формат данных персонажа','Текст и списки приведены к формату персонажа без повторного запроса ИИ.');
         await save(state);
     }
     if(pending.changes.length){
-        const characters=await backend(settings(),'/characters/sync',{method:'POST',body:{scope_id:state.scopeId,request_id:pending.id,changes:pending.changes}});
+        syncLocal(state,pending);
         if(!same(state))return;
-        state.characters=characters;
     }
     if(!same(state))return;
     state.previous=pending.previous;
@@ -135,15 +132,13 @@ async function process(){
 function eventIdentity(){ensureMessageIds();const messages=ctx().chat.filter(m=>m.is_user&&!m.is_system);return messages.at(-1)?.extra?.[KEY]?.id??`opening-${active.scopeId}`;}
 function registerTools(){
     const context=ctx();
-    context.registerFunctionTool({name:'rpg_check',displayName:'Проверка RPG',description:'Resolve a check or roll on the RPG backend. Never invent results. Reuse check_key for the same action and target. Supply difficulty justification before rolling. Stored passives may resolve covered actions automatically.',
-        parameters:{type:'object',properties:{check_key:{type:'string',description:'Stable action + target key; never change to retry'},reason:{type:'string'},actor_id:{type:'string',description:'owner_id from RPG context; omit for a world event'},formula:{type:'string',description:'NdS, e.g. 1d20, 1d100, 2d6; no arithmetic'},target_id:{type:'string',description:'Stored target character owner_id'},difficulty_path:{type:'string',description:'Backend reads target difficulty: armor_class or notes.checks.lock.dc; omit difficulty when using this'},difficulty:{type:'integer'},difficulty_reason:{type:'string'},comparison:{type:'string',enum:['gte','lte']},mode:{type:'string',enum:['normal','advantage','disadvantage']},attribute:{type:'string',enum:['strength','dexterity','constitution','intelligence','wisdom','charisma']},attribute_rule:{type:'string',enum:['none','raw','d20']},bonus_paths:{type:'array',items:{type:'string'},description:'Stored integer paths such as skills.lockpick.bonus; no invented bonuses'},resolution:{type:'string',enum:['roll','automatic','impossible']},passive_path:{type:'string',description:'Stored passive object with automatic_success and actions covering check_key'}},required:['check_key','reason','formula'],additionalProperties:false},
+    context.registerFunctionTool({name:'rpg_check',displayName:'Проверка RPG',description:'Resolve a check or roll using the extension’s local rules engine. Never invent results. Reuse check_key for the same action and target. Supply difficulty justification before rolling. Stored passives may resolve covered actions automatically.',
+        parameters:{type:'object',properties:{check_key:{type:'string',description:'Stable action + target key; never change to retry'},reason:{type:'string'},actor_id:{type:'string',description:'owner_id from RPG context; omit for a world event'},formula:{type:'string',description:'NdS, e.g. 1d20, 1d100, 2d6; no arithmetic'},target_id:{type:'string',description:'Stored target character owner_id'},difficulty_path:{type:'string',description:'Code reads stored target difficulty: armor_class or notes.checks.lock.dc; omit difficulty when using this'},difficulty:{type:'integer'},difficulty_reason:{type:'string'},comparison:{type:'string',enum:['gte','lte']},mode:{type:'string',enum:['normal','advantage','disadvantage']},attribute:{type:'string',enum:['strength','dexterity','constitution','intelligence','wisdom','charisma']},attribute_rule:{type:'string',enum:['none','raw','d20']},bonus_paths:{type:'array',items:{type:'string'},description:'Stored integer paths such as skills.lockpick.bonus; no invented bonuses'},resolution:{type:'string',enum:['roll','automatic','impossible']},passive_path:{type:'string',description:'Stored passive object with automatic_success and actions covering check_key'}},required:['check_key','reason','formula'],additionalProperties:false},
         shouldRegister:()=>!!active&&settings().enabled,stealth:false,
         formatMessage:args=>`${args.formula}: ${args.reason}`,
         action:async args=>{
             const state=active;if(!state)throw new Error('Нет активного чата');
-            let result;
-            try{result=await backend(settings(),'/checks',{method:'POST',body:{...args,scope_id:state.scopeId,event_id:eventIdentity()}});}
-            catch(error){if(error.status===409 && error.receipt)result=error.receipt;else throw error;}
+            const result=resolveLocalCheck(state,args,eventIdentity());
             if(same(state)){if(!state.receipts.some(r=>r.id===result.id))state.receipts.push(result);state.receipts=state.receipts.slice(-100);await save(state);ui.refresh();}
             return JSON.stringify(result);
         }});
@@ -174,7 +169,7 @@ async function init(){
         saveCharacter,
         importCharacter:async id=>{const state=active;const c=await backend(settings(),`/characters/${encodeURIComponent(id.trim())}`);if(!same(state))return;await saveCharacter(null,Object.fromEntries(CHARACTER_FIELDS.map(k=>[k,c[k]])));},
         saveMemory:async(summary,facts)=>{const delta=validateDelta({summary,facts});active.facts={};applyDelta(active,delta);await save();},
-        refreshReceipts:async()=>{const state=active;const receipts=await backend(settings(),`/checks?scope_id=${encodeURIComponent(state.scopeId)}&limit=100`);if(same(state)){state.receipts=receipts.reverse();await save(state);}}
+        refreshReceipts:async()=>{const state=active;state.receipts=clone(state.localChecks.slice(-100));await save(state);}
     });
     registerTools();
     const events=context.eventTypes,source=context.eventSource;
