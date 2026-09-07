@@ -25,7 +25,7 @@ test('HTTP, body interruptions and token truncation have distinct diagnostics',a
     globalThis.fetch=async()=>({status:200,ok:true,headers:new Headers(),text:async()=>{throw new Error('Premature close');}});
     await assert.rejects(()=>askAI(prefs,'test',{}),e=>e.diagnostics.stage==='response-body'&&e.message==='Premature close');
     globalThis.fetch=async()=>response('',{choices:[{message:{content:'{'},finish_reason:'length'}],usage:{completion_tokens:4096}});
-    await assert.rejects(()=>askAI(prefs,'test',{}),e=>e.message.includes('truncated')&&e.diagnostics.usage.completion_tokens===4096);
+    await assert.rejects(()=>askAI(prefs,'test',{}),e=>e.diagnostics.finishReason==='length'&&e.diagnostics.usage.completion_tokens===4096);
 });
 test('processing signal does not disable the request timeout',async t=>{
     t.mock.timers.enable({apis:['setTimeout']});

@@ -1,7 +1,7 @@
 import {normalizeCharacterData} from './character-data.js';
 export const KEY = 'underphase_dnd';
-export const CHARACTER_FIELDS = ['name','race','character_class','inventory','equipment','description','personality','background','goals','traits','relationships','current_state','memories','notes','tags','is_player','is_temporary','level','experience','armor_class','max_hp','current_hp','temporary_hp','strength','dexterity','constitution','intelligence','wisdom','charisma','general_condition','buffs','debuffs','active_skills','skills','spells','spell_slots'];
-export const SECTIONS = {vitals:'Health and condition',progress:'Level and experience',attributes:'Attributes',skills:'Skills',inventory:'Inventory',equipment:'Equipment',spells:'Spells',effects:'Effects',biography:'Personality and history',scene:'Location, time and weather',party:'Party'};
+export const CHARACTER_FIELDS = ['name','race','character_class','inventory','equipment','description','personality','background','goals','traits','relationships','current_state','memories','notes','tags','is_player','is_temporary','level','experience','experience_target','armor_class','max_hp','current_hp','temporary_hp','strength','dexterity','constitution','intelligence','wisdom','charisma','general_condition','buffs','debuffs','active_skills','skills','spells','spell_slots'];
+export const SECTIONS = {vitals:'Здоровье и состояние',progress:'Уровень и опыт',attributes:'Характеристики',skills:'Навыки',inventory:'Инвентарь',equipment:'Экипировка',spells:'Заклинания',effects:'Эффекты',biography:'Личность и история',scene:'Локация, время и погода',party:'Отряд'};
 export const clone = value => structuredClone(value);
 export function uuid() {
     // randomUUID is unavailable on plain HTTP LAN origins; getRandomValues is available.
@@ -17,14 +17,14 @@ export const pathValue = (object, path) => String(path ?? '').split('.').reduce(
 export function parseJson(text) {
     const clean = String(text).trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
     return JSON.parse(clean, (key,value) => {
-        if (['__proto__','prototype','constructor'].includes(key)) throw new Error('Unsafe JSON key');
+        if (['__proto__','prototype','constructor'].includes(key)) throw new Error('Недопустимый ключ JSON');
         return value;
     });
 }
 
 export function newState() {
     return {version:1, scopeId:uuid(), protagonist:null, characters:[],
-        scene:{location:'Unknown',time:'Unknown',weather:'Unknown',party:{name:'',leader:'',members:[]}},
+        scene:{location:'Неизвестно',time:'Неизвестно',weather:'Неизвестно',party:{name:'',leader:'',members:[]}},
         summary:'', facts:{}, trackers:[], trackerValues:{}, previous:null, processed:[], pending:null,
         sections:Object.fromEntries(Object.keys(SECTIONS).map(k=>[k,true])), receipts:[], activity:[], turns:0};
 }
@@ -55,13 +55,13 @@ export function selectFacts(facts, query, budget=6000) {
 }
 
 export function validateDelta(delta) {
-    if (!safeObject(delta)) throw new Error('AI must return a JSON object');
+    if (!safeObject(delta)) throw new Error('ИИ должна вернуть JSON-объект');
     const allowed = ['summary','facts','forget','scene','characters','trackers'];
-    if (Object.keys(delta).some(k=>!allowed.includes(k))) throw new Error('Unknown processor response fields');
-    if (delta.summary !== undefined && (typeof delta.summary !== 'string' || delta.summary.length>12000)) throw new Error('Invalid summary: expected text up to 12000 characters');
-    if (delta.facts !== undefined && (!Array.isArray(delta.facts) || delta.facts.length>150 || delta.facts.some(f=>!safeObject(f)||typeof f.id!=='string'||!f.id||typeof f.text!=='string'||f.text.length>4000))) throw new Error('Invalid facts: expected up to 150 objects with id and text (max 4000 characters each)');
-    if (delta.forget !== undefined && (!Array.isArray(delta.forget)||delta.forget.some(id=>typeof id!=='string'))) throw new Error('Invalid forget list: expected string IDs');
-    if (delta.scene !== undefined && (!safeObject(delta.scene)||Object.keys(delta.scene).some(k=>!['location','time','weather','party'].includes(k)))) throw new Error('Invalid scene: only location, time, weather and party are allowed');
+    if (Object.keys(delta).some(k=>!allowed.includes(k))) throw new Error('Неизвестные поля ответа обработчика');
+    if (delta.summary !== undefined && (typeof delta.summary !== 'string' || delta.summary.length>12000)) throw new Error('Некорректная сводка');
+    if (delta.facts !== undefined && (!Array.isArray(delta.facts) || delta.facts.length>150 || delta.facts.some(f=>!safeObject(f)||typeof f.id!=='string'||!f.id||typeof f.text!=='string'||f.text.length>4000))) throw new Error('Некорректные факты');
+    if (delta.forget !== undefined && (!Array.isArray(delta.forget)||delta.forget.some(id=>typeof id!=='string'))) throw new Error('Некорректный список удалённых фактов');
+    if (delta.scene !== undefined && (!safeObject(delta.scene)||Object.keys(delta.scene).some(k=>!['location','time','weather','party'].includes(k)))) throw new Error('Некорректная сцена');
     if (delta.scene) {
         for (const key of ['location','time','weather']) if (delta.scene[key]!==undefined && typeof delta.scene[key]!=='string') throw new Error('Scene location, time and weather must be text');
         const p=delta.scene.party;
@@ -82,7 +82,7 @@ export function prepareChanges(delta, state) {
     return (delta.characters ?? []).map(c=> {
         const existing=c.owner_id?state.characters.find(x=>x.owner_id===c.owner_id):state.characters.find(x=>x.name===c.data.name);
         if(c.owner_id && !existing) throw new Error('AI referenced a character outside the current chat');
-        if(!existing && !c.data.name) throw new Error('A new character needs a name');
+        if(!existing && !c.data.name) throw new Error('Новому персонажу нужно имя');
         const identity=existing?.owner_id ?? c.data.name;
         if(seen.has(identity)) throw new Error('Duplicate character in one update');
         seen.add(identity);

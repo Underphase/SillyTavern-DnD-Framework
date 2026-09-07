@@ -7,7 +7,7 @@ import {newState} from '../core.js';
 
 test('active stages keep elapsed time and ignore incidental success notifications',()=>{
     let now=0;const s=new StatusTracker(()=>now),task=s.start('Waiting for AI');
-    now=31000;s.notify('Settings saved');assert.equal(s.view().kind,'working');assert.match(s.view().message,/31s.*still waiting/);
+    now=31000;s.notify('Settings saved');assert.equal(s.view().kind,'working');assert.match(s.view().message,/31 с.*ожидание продолжается/);
     s.update(task,'Saving');assert.equal(s.view().elapsed,31);
     s.finish(task,'Saved');assert.equal(s.view().kind,'success');assert.equal(s.view().message,'Saved');
     s.finish(task,'Cancelled','warning');assert.equal(s.view().message,'Saved');

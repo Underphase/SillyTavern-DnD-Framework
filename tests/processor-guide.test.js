@@ -13,7 +13,7 @@ test('shipped examples work through the real update pipeline and preserve omitte
         changes.forEach((c,i)=>assert.deepEqual(c.data,delta.characters[i].data));
         syncLocal(state,{id:`example-${index}`,changes});applyDelta(state,delta);
     };
-    apply(0);assert.equal(state.characters.length,1);assert.equal(state.scene.location,'Unknown');
+    apply(0);assert.equal(state.characters.length,1);assert.equal(state.scene.location,'Неизвестно');
     const c=state.characters[0];c.owner_id='demo-1';c.current_hp=9;
     state.scene.party={name:'Moon',leader:'Other',members:['Other','Mira']};
     apply(1);assert.equal(state.characters[0].current_hp,7);assert.deepEqual(state.scene.party,{name:'Moon',leader:'Mira',members:['Other','Mira']});

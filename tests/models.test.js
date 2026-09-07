@@ -20,5 +20,5 @@ test('model discovery sends only a GET and the configured credential; errors are
     assert.equal((await listModels('https://example.com/v1','key'))[0].id,'test/model');
     assert.equal(request.options.method,'GET');assert.equal(request.options.headers.Authorization,'Bearer key');assert.equal(request.options.body,undefined);
     globalThis.fetch=async()=>new Response('',{status:401});
-    await assert.rejects(()=>listModels('https://example.com/v1','bad'),/401.*key/);
+    await assert.rejects(()=>listModels('https://example.com/v1','bad'),/401.*ключ/);
 });
