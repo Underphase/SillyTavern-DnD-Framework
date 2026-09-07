@@ -1,3 +1,4 @@
+import {normalizeCharacterData} from './character-data.js';
 export const KEY = 'underphase_dnd';
 export const CHARACTER_FIELDS = ['name','race','character_class','inventory','equipment','description','personality','background','goals','traits','relationships','current_state','memories','notes','tags','is_player','is_temporary','level','experience','armor_class','max_hp','current_hp','temporary_hp','strength','dexterity','constitution','intelligence','wisdom','charisma','general_condition','buffs','debuffs','active_skills','skills','spells','spell_slots'];
 export const SECTIONS = {vitals:'Здоровье и состояние',progress:'Уровень и опыт',attributes:'Характеристики',skills:'Навыки',inventory:'Инвентарь',equipment:'Экипировка',spells:'Заклинания',effects:'Эффекты',biography:'Личность и история',scene:'Локация, время и погода',party:'Отряд'};
@@ -70,6 +71,7 @@ export function validateDelta(delta) {
     for (const c of delta.characters ?? []) {
         if(!safeObject(c)||!safeObject(c.data)||Object.keys(c.data).some(k=>!CHARACTER_FIELDS.includes(k))) throw new Error('Неизвестное поле персонажа');
         if(c.owner_id!==undefined && typeof c.owner_id!=='string') throw new Error('Некорректный ID персонажа');
+        normalizeCharacterData(c.data);
     }
     if(delta.trackers!==undefined && !safeObject(delta.trackers)) throw new Error('Некорректные значения треккеров');
     return delta;
@@ -84,7 +86,7 @@ export function prepareChanges(delta, state) {
         const identity=existing?.owner_id ?? c.data.name;
         if(seen.has(identity)) throw new Error('Повтор персонажа в одном обновлении');
         seen.add(identity);
-        return {owner_id:existing?.owner_id ?? uuid(),data:c.data,expected_updated_at:existing?.updated_at ?? null};
+        return {owner_id:existing?.owner_id ?? uuid(),data:normalizeCharacterData(c.data,existing),expected_updated_at:existing?.updated_at ?? null};
     });
 }
 

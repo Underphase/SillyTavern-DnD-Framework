@@ -2,6 +2,7 @@ import {KEY,CHARACTER_FIELDS,clone,uuid,newState,snapshot,reconcileMessages,sele
 import {NARRATOR_PROMPT,PROCESSOR_PROMPT,BUILDER_PROMPT} from './prompts.js';
 import {backend,askAI} from './client.js';
 import {FrameworkUI} from './ui.js';
+import {CHARACTER_DATA_RULES,normalizePendingChanges} from './character-data.js';
 
 const ctx=()=>SillyTavern.getContext();
 const defaults={enabled:true,backendUrl:'http://127.0.0.1:8001',backendKey:'',aiMode:'custom',aiUrl:'',aiKey:'',model:'',profileId:'',maxTokens:4096,memoryBudget:6000,eventBudget:24000,opacity:0.96,devMode:false,narratorPrompt:NARRATOR_PROMPT,processorPrompt:PROCESSOR_PROMPT,builderPrompt:BUILDER_PROMPT};
@@ -66,6 +67,10 @@ function schedule(){
 
 async function completePending(state){
     const pending=state.pending;if(!pending)return;
+    if(normalizePendingChanges(pending,state.characters)){
+        log('Исправлен формат данных персонажа','Текст и списки приведены к формату API без повторного запроса ИИ.');
+        await save(state);
+    }
     if(pending.changes.length){
         const characters=await backend(settings(),'/characters/sync',{method:'POST',body:{scope_id:state.scopeId,request_id:pending.id,changes:pending.changes}});
         if(!same(state))return;
@@ -104,7 +109,7 @@ async function process(){
                     facts:selectFacts(state.facts,JSON.stringify(batch),settings().memoryBudget*2),
                     characters:relevantCharacters(state,JSON.stringify(batch)),characterIndex:compactCharacters(state),characterFields:CHARACTER_FIELDS,scene:state.scene,trackers:aiTrackers,
                     receipts:state.receipts.slice(-10)};
-                const delta=validateDelta(await askAI(settings(),settings().processorPrompt,input,{signal:controller.signal,onUsage:usage=>log('Обработка состояния',usage)}));
+                const delta=validateDelta(await askAI(settings(),`${settings().processorPrompt}\n${CHARACTER_DATA_RULES}`,input,{signal:controller.signal,onUsage:usage=>log('Обработка состояния',usage)}));
                 if(!same(state)||controller.signal.aborted)return;
                 if(JSON.stringify(currentMessages())!==transcript){log('Изменения во время обработки','Устаревший ответ ИИ отброшен');continue;}
                 const next=new Map(state.processed.map(m=>[m.id,m]));

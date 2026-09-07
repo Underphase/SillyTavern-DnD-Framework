@@ -21,6 +21,7 @@ await page.route('**/api/**',async route=>{
     const request=route.request(),url=new URL(request.url());
     if(url.pathname==='/api/characters/sync'){
         const body=request.postDataJSON();
+        if(body.changes.some(c=>['personality','goals'].some(k=>typeof c.data[k]==='string')))return route.fulfill({status:422,json:{detail:'Expected an object'}});
         for(const change of body.changes){const existing=records.find(c=>c.owner_id===change.owner_id);if(existing)Object.assign(existing,change.data);else records.push({...sampleCharacter(),...change.data,owner_id:change.owner_id,scope_id:body.scope_id});}
         return route.fulfill({json:records.filter(c=>c.scope_id===body.scope_id)});
     }
@@ -119,6 +120,16 @@ try{
     assert.equal(await page.evaluate(()=>fixture.context.chatMetadata.underphase_dnd.characters[0].experience),8500);
     await page.evaluate(()=>fixture.context.eventSource.emit('GENERATION_ENDED'));
     await page.waitForTimeout(1100);assert.equal(aiCalls,1);
+    // Recover a batch saved by an older extension after the exact dict_type failure.
+    await page.evaluate(()=>{
+        const s=fixture.context.chatMetadata.underphase_dnd;
+        s.pending={id:'legacy-rejected-batch',changes:[{owner_id:'selena',data:{personality:'Спокойна',goals:'Найти союзников'},expected_updated_at:null}],delta:{summary:'Обновление восстановлено'},processed:structuredClone(s.processed),previous:null};
+    });
+    await page.getByRole('button',{name:'↻ Обновить',exact:true}).click();
+    await page.waitForFunction(()=>fixture.context.chatMetadata.underphase_dnd.pending===null);
+    assert.equal(await page.evaluate(()=>fixture.context.chatMetadata.underphase_dnd.characters[0].personality.description),'Спокойна');
+    assert.equal(await page.evaluate(()=>fixture.context.chatMetadata.underphase_dnd.characters[0].goals.description),'Найти союзников');
+    assert.equal(aiCalls,1);
     // A delayed completion must not leak into a new chat.
     delayAI=true;
     await page.evaluate(()=>{fixture.context.chat[0].mes='Новое действие';fixture.context.eventSource.emit('MESSAGE_EDITED');});
