@@ -27,6 +27,12 @@ await page.route('**/api/**',async route=>{
     if(url.pathname==='/api/checks'&&request.method()==='GET')return route.fulfill({json:[]});
     return route.fulfill({status:404,json:{detail:'Not found'}});
 });
+let modelRequests=0,modelsFail=false;
+await page.route('https://openrouter.ai/api/v1/models',route=>{
+    modelRequests++;
+    if(modelsFail)return route.fulfill({status:401,json:{error:'Unauthorized'}});
+    return route.fulfill({json:{data:Array.from({length:120},(_,i)=>({id:`test/model-${i}`,name:`Moon Model ${i}`}))}});
+});
 await page.route('**/mock/v1/chat/completions',async route=>{
     aiCalls++;
     if(delayAI)await new Promise(r=>resolveAI=r);
@@ -47,6 +53,34 @@ try{
     await page.locator('#rpg-moon').click();
     const dialog=await page.locator('#rpg-framework').boundingBox();assert.ok(Math.abs(dialog.x+dialog.width/2-720)<2);
     await page.getByRole('button',{name:'Настройки',exact:true}).click();
+    await page.getByRole('button',{name:'OpenRouter',exact:true}).click();
+    await page.waitForFunction(()=>document.querySelector('[name="modelList"]').options.length===120);
+    await page.locator('[name="modelSearch"]').fill('MODEL 119');
+    assert.equal(await page.locator('[name="modelList"] option').count(),1);
+    await page.locator('[name="modelList"]').selectOption('test/model-119');
+    assert.equal(await page.locator('[name="model"]').inputValue(),'test/model-119');
+    await page.locator('[name="modelSearch"]').fill('not-a-model');
+    assert.equal(await page.locator('[name="modelList"] option').count(),0);
+    assert.equal(await page.locator('[name="model"]').inputValue(),'test/model-119');
+    await page.locator('[name="modelSearch"]').fill('');
+    assert.equal(modelRequests,1);
+    await page.setViewportSize({width:390,height:844});
+    await page.locator('[name="modelList"]').scrollIntoViewIfNeeded();
+    await page.screenshot({path:resolve(root,'test-results/model-picker-mobile.png')});
+    assert.equal(await page.locator('.rpg-body').evaluate(el=>el.scrollWidth>el.clientWidth+1),false);
+    await page.setViewportSize({width:1440,height:1100});
+    modelsFail=true;
+    await page.getByRole('button',{name:'Загрузить модели',exact:false}).click();
+    await page.waitForFunction(()=>document.querySelector('#rpg-model-count').textContent.includes('401'));
+    assert.equal(await page.locator('[name="model"]').inputValue(),'test/model-119');
+    await page.locator('[name="aiMode"]').selectOption('profile');
+    assert.equal(await page.locator('[name="modelList"]').isDisabled(),true);
+    await page.locator('[name="aiMode"]').selectOption('custom');
+    await page.getByRole('button',{name:'Сохранить настройки',exact:true}).click();
+    assert.equal(await page.evaluate(()=>fixture.context.extensionSettings.underphase_dnd.model),'test/model-119');
+    // Restore the test processor endpoint and leave it unconfigured until the auto-update test.
+    await page.locator('[name="aiUrl"]').fill(`${base}/mock/v1`);
+    await page.locator('[name="model"]').fill('');
     await page.locator('[name="section_inventory"]').uncheck();
     await page.getByRole('button',{name:'Сохранить настройки',exact:true}).click();
     await page.getByRole('button',{name:'История',exact:true}).click();

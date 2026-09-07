@@ -1,5 +1,6 @@
 import {escapeHtml as e,clone,SECTIONS} from './core.js';
 import {SAMPLE_TRACKER,renderTracker,validateTracker} from './trackers.js';
+import {listModels,filterModels} from './models.js';
 
 const button=(action,label,extra='')=>`<button type="button" data-action="${action}" ${extra}>${label}</button>`;
 const field=(name,label,value,type='text',extra='')=>`<label class="rpg-field"><span>${label}</span><input name="${name}" type="${type}" value="${e(value)}" ${extra}></label>`;
@@ -11,6 +12,7 @@ const details=(label,value)=>`<details class="rpg-details"><summary>${e(label)}<
 export class FrameworkUI {
     constructor(actions) {
         this.actions=actions;this.tab='story';this.draft=clone(SAMPLE_TRACKER);this.draftOriginal=null;
+        this.models=[];this.modelSource='';this.modelRequest=null;
         this.orb=document.createElement('button');this.orb.id='rpg-moon';this.orb.type='button';this.orb.title='D&D Framework — открыть / перетащить';this.orb.setAttribute('aria-label','Открыть D&D Framework');this.orb.innerHTML='<span>☾</span><i></i>';
         this.dialog=document.createElement('dialog');this.dialog.id='rpg-framework';
         document.body.append(this.orb,this.dialog);
@@ -31,8 +33,19 @@ export class FrameworkUI {
             if(control) this.handle(control.dataset.action,control).catch(error=>this.error(error));
         });
         this.dialog.addEventListener('change',event=>{
+            if(event.target.name==='modelList' && event.target.value){
+                this.dialog.querySelector('[name="model"]').value=event.target.value;
+                this.status('Модель выбрана. Нажми «Сохранить настройки».');
+            }
+            if(event.target.name==='aiMode')this.updateModelPicker();
             if(event.target.name==='opacity'){this.dialog.style.setProperty('--rpg-opacity',event.target.value);}
             if(event.target.closest('[data-workshop]')){try{this.readDraft();this.preview();}catch(error){this.status(error.message,true);}}
+        });
+        this.dialog.addEventListener('input',event=>{
+            if(event.target.name==='modelSearch'||event.target.name==='model')this.updateModelPicker();
+            if(['aiUrl','aiKey'].includes(event.target.name)){
+                this.modelRequest?.abort();this.modelRequest=null;this.models=[];this.modelSource='';this.updateModelPicker();
+            }
         });
         setInterval(()=>{
             if(!this.dialog.open||this.tab!=='story'||document.hidden)return;
@@ -52,11 +65,13 @@ export class FrameworkUI {
     busy(value){this.orb.classList.toggle('rpg-busy',value);this.dialog.classList.toggle('rpg-working',value);}
     refresh(){if(this.dialog.open && !['workshop','settings'].includes(this.tab) && !this.dialog.contains(document.activeElement?.closest('textarea,input,select')))this.render();}
     render(){
+        this.modelRequest?.abort();this.modelRequest=null;
         const s=this.actions.state(),prefs=this.actions.settings();
         this.dialog.style.setProperty('--rpg-opacity',prefs.opacity);
         const tabs={story:'История',characters:'Персонажи',workshop:'Мастерская',memory:'Память',journal:'Кубики',settings:'Настройки',...(prefs.devMode?{developer:'Dev'}:{})};
         this.dialog.innerHTML=`<div class="rpg-shell"><header class="rpg-header"><div class="rpg-brand"><span>☾</span><div><small>UNDERPHASE / D&D FRAMEWORK</small><h2>Лунная хроника</h2></div></div><div class="rpg-header-actions">${button('process','↻ Обновить','title="Обработать новые события"')}${button('close','✕','aria-label="Закрыть"')}</div></header><nav class="rpg-tabs" aria-label="Разделы">${Object.entries(tabs).map(([key,label])=>button('tab',label,`data-tab="${key}" class="${this.tab===key?'active':''}"`)).join('')}</nav><main class="rpg-body">${!s?empty('Открой чат','Каждая история получает собственные память, героев и треккеры.'):this.content(s,prefs)}</main><footer><span class="rpg-status" role="status">${e(this.lastStatus?.message??'Твоя история. Её правила.')}</span><span class="rpg-signature">☾ ${s?`${s.characters.length} персонажей · ${s.turns} ответов`:'Новая история'}</span></footer></div>`;
         if(s && this.tab==='workshop')this.preview();
+        if(s && this.tab==='settings')this.updateModelPicker();
         if(s && this.tab==='story')for(const frame of this.dialog.querySelectorAll('iframe[data-tracker]')){const t=s.trackers.find(x=>x.id===frame.dataset.tracker);frame.srcdoc=renderTracker(t,s);}
     }
     content(s,p){
@@ -92,7 +107,44 @@ export class FrameworkUI {
     workshop(s){const t=this.draft;return `<div class="rpg-section-heading"><div><div class="rpg-eyebrow">МАСТЕРСКАЯ</div><h3>Интерфейс твоего мира</h3><p class="rpg-muted">Готовые виджеты, свой HTML и CSS. Предпросмотр использует вымышленные данные.</p></div>${button('new-tracker','Новый')}</div><div class="rpg-workshop-grid"><div data-workshop>${area('builderRequest','Опиши нужную механику','', 'placeholder="Например: репутация трёх гильдий, шкалы доверия и награды"')}${button('generate-tracker','✦ Создать с ИИ','class="rpg-primary"')}<div class="rpg-inline">${field('trackerId','ID',t.id)}${field('trackerName','Название',t.name)}</div>${area('trackerPrompt','Правила обновления для ИИ',t.prompt)}${area('trackerHtml','HTML · вставляй виджеты через {{id}}',t.html,'class="rpg-code"')}${area('trackerCss','CSS поверх лунного стиля',t.css,'class="rpg-code"')}${area('trackerFields','Поля и примерные значения (JSON)',json(t.fields),'class="rpg-code rpg-fields-json"')}<p class="rpg-muted">Виджеты: text, number, meter, inventory, coins, gems, boolean.<br>Источники: ai, character, scene, turns, clock. Последние четыре работают без отдельного запроса ИИ; для character и scene укажи path.</p><div class="rpg-toolbar">${button('preview','Обновить пример')}${button('save-tracker','Сохранить','class="rpg-primary"')}${button('cancel-tracker','Отмена')}</div></div><aside class="rpg-preview"><div class="rpg-eyebrow">ПРИМЕР · ВЫМЫШЛЕННЫЕ ДАННЫЕ</div><iframe sandbox="" referrerpolicy="no-referrer" title="Предпросмотр треккера" id="rpg-tracker-preview"></iframe><div class="rpg-muted" id="rpg-widget-keys"></div></aside></div>${s.trackers.length?`<h3>Сохранённые интерфейсы</h3>${s.trackers.map(t=>`<div class="rpg-saved-tracker"><span>${e(t.name)}</span><div>${button('edit-tracker','Изменить',`data-id="${e(t.id)}"`)} ${button('delete-tracker','Удалить',`data-id="${e(t.id)}"`)}</div></div>`).join('')}`:''}`;}
     memory(s){return `<h3>Память текущего чата</h3><p class="rpg-muted">Все факты сохраняются здесь. В повествование передаются сводка и подходящие к сцене факты; остальное доступно ИИ через поиск.</p>${area('summary','Текущая сводка',s.summary)}${area('facts','Факты (JSON: id, text, pinned)',json(Object.values(s.facts)),'class="rpg-code"')}${button('save-memory','Сохранить память','class="rpg-primary"')}${s.previous?details('Предыдущее состояние',s.previous):''}${s.pending?`<div class="rpg-card"><h3>Есть неподтверждённая синхронизация</h3><p>При сетевом сбое данные остаются в чате. Повтори обработку для завершения.</p>${button('process','Повторить')}</div>`:''}`;}
     journal(s){return `<div class="rpg-section-heading"><div><h3>Кубики и проверки</h3><p class="rpg-muted">Результат определяет backend. ИИ получает готовую запись.</p></div>${button('refresh-receipts','↻ Журнал API')}</div>${s.receipts.length?s.receipts.slice().reverse().map(r=>`<article class="rpg-card"><div class="rpg-section-heading"><strong>${e(r.parameters.reason)}</strong><span class="rpg-result">${e(r.total??(r.success?'Успех':'Невозможно'))}</span></div><p class="rpg-muted">${e(r.parameters.formula)} · ${e(r.parameters.mode)}${(r.difficulty??r.parameters.difficulty)!=null?` · сложность ${e(r.difficulty??r.parameters.difficulty)}`:''}</p>${details('Основания и результат',r)}</article>`).join(''):empty('Кубики ещё не брошены','Во время ответа ИИ может вызвать проверку и продолжить сцену после результата.')}`;}
-    settingsView(s,p){const profiles=this.actions.profiles();return `<div class="rpg-settings-grid"><section><h3>Подключения</h3><label class="rpg-check"><input name="enabled" type="checkbox" ${p.enabled?'checked':''}> Автоматическая обработка и инструменты</label>${field('backendUrl','RPG API',p.backendUrl,'url')}${field('backendKey','Ключ RPG API',p.backendKey,'password','autocomplete="off"')}${button('test-backend','Проверить API')}<h3>Отдельная ИИ</h3><label class="rpg-field"><span>Способ подключения</span><select name="aiMode"><option value="custom" ${p.aiMode==='custom'?'selected':''}>OpenAI-совместимый API</option><option value="profile" ${p.aiMode==='profile'?'selected':''}>Профиль SillyTavern</option></select></label><label class="rpg-field"><span>Профиль</span><select name="profileId"><option value="">Выбери профиль</option>${profiles.map(x=>`<option value="${e(x.id)}" ${x.id===p.profileId?'selected':''}>${e(x.name)}</option>`).join('')}</select></label>${field('aiUrl','Адрес ИИ (до /v1 или /chat/completions)',p.aiUrl,'url')}${field('aiKey','Ключ ИИ',p.aiKey,'password','autocomplete="off"')}${field('model','Модель',p.model)}${field('maxTokens','Максимум выходных токенов',p.maxTokens,'number','min="256" max="32000"')}${button('test-ai','Проверить ИИ')}<p class="rpg-muted">Ключи — общие настройки расширения, не память чата. Для провайдеров без браузерного CORS используй профиль SillyTavern.</p></section><section><h3>Внешний вид</h3>${field('opacity','Непрозрачность окна',p.opacity,'range','min="0.55" max="1" step="0.05"')}<h3>Секции этого чата</h3>${Object.entries(SECTIONS).map(([k,label])=>`<label class="rpg-check"><input name="section_${k}" type="checkbox" ${s.sections[k]?'checked':''}> ${label}</label>`).join('')}<h3>Контекст и диагностика</h3>${field('memoryBudget','Бюджет фактов в контексте (символы)',p.memoryBudget,'number','min="1000" max="30000"')}${field('eventBudget','Пакет новых событий (символы)',p.eventBudget,'number','min="8000" max="100000"')}<label class="rpg-check"><input name="devMode" type="checkbox" ${p.devMode?'checked':''}> Dev mode</label><p class="rpg-muted">Инструменты основной модели: ${this.actions.toolsSupported()?'доступны':'не доступны — включи Function calling в настройках ответа ST и выбери совместимую модель'}.</p></section></div><details class="rpg-details"><summary>Редактировать встроенные промпты</summary>${area('narratorPrompt','Повествование и кубики',p.narratorPrompt)}${area('processorPrompt','Обработчик памяти и персонажей',p.processorPrompt)}${area('builderPrompt','Создание интерфейсов',p.builderPrompt)}${button('reset-prompts','Восстановить промпты')}</details><div class="rpg-toolbar">${button('save-settings','Сохранить настройки','class="rpg-primary"')}${button('save-template','Сделать секции и треккеры шаблоном новых чатов')}</div>`;}
+    settingsView(s,p){const profiles=this.actions.profiles();return `<div class="rpg-settings-grid"><section><h3>Подключения</h3><label class="rpg-check"><input name="enabled" type="checkbox" ${p.enabled?'checked':''}> Автоматическая обработка и инструменты</label>${field('backendUrl','RPG API',p.backendUrl,'url')}${field('backendKey','Ключ RPG API',p.backendKey,'password','autocomplete="off"')}${button('test-backend','Проверить API')}<h3>Отдельная ИИ</h3><label class="rpg-field"><span>Способ подключения</span><select name="aiMode"><option value="custom" ${p.aiMode==='custom'?'selected':''}>OpenAI-совместимый API</option><option value="profile" ${p.aiMode==='profile'?'selected':''}>Профиль SillyTavern</option></select></label><label class="rpg-field"><span>Профиль</span><select name="profileId"><option value="">Выбери профиль</option>${profiles.map(x=>`<option value="${e(x.id)}" ${x.id===p.profileId?'selected':''}>${e(x.name)}</option>`).join('')}</select></label>${field('aiUrl','Адрес ИИ (до /v1 или /chat/completions)',p.aiUrl,'url')}${field('aiKey','Ключ ИИ',p.aiKey,'password','autocomplete="off"')}${this.modelPicker()}${field('model','Выбранная модель / ручной ввод',p.model)}${field('maxTokens','Максимум выходных токенов',p.maxTokens,'number','min="256" max="32000"')}${button('test-ai','Проверить ИИ')}<p class="rpg-muted">Ключи — общие настройки расширения, не память чата. Для провайдеров без браузерного CORS используй профиль SillyTavern.</p></section><section><h3>Внешний вид</h3>${field('opacity','Непрозрачность окна',p.opacity,'range','min="0.55" max="1" step="0.05"')}<h3>Секции этого чата</h3>${Object.entries(SECTIONS).map(([k,label])=>`<label class="rpg-check"><input name="section_${k}" type="checkbox" ${s.sections[k]?'checked':''}> ${label}</label>`).join('')}<h3>Контекст и диагностика</h3>${field('memoryBudget','Бюджет фактов в контексте (символы)',p.memoryBudget,'number','min="1000" max="30000"')}${field('eventBudget','Пакет новых событий (символы)',p.eventBudget,'number','min="8000" max="100000"')}<label class="rpg-check"><input name="devMode" type="checkbox" ${p.devMode?'checked':''}> Dev mode</label><p class="rpg-muted">Инструменты основной модели: ${this.actions.toolsSupported()?'доступны':'не доступны — включи Function calling в настройках ответа ST и выбери совместимую модель'}.</p></section></div><details class="rpg-details"><summary>Редактировать встроенные промпты</summary>${area('narratorPrompt','Повествование и кубики',p.narratorPrompt)}${area('processorPrompt','Обработчик памяти и персонажей',p.processorPrompt)}${area('builderPrompt','Создание интерфейсов',p.builderPrompt)}${button('reset-prompts','Восстановить промпты')}</details><div class="rpg-toolbar">${button('save-settings','Сохранить настройки','class="rpg-primary"')}${button('save-template','Сделать секции и треккеры шаблоном новых чатов')}</div>`;}
+    modelPicker(){
+        return `<div class="rpg-model-picker"><div class="rpg-toolbar">${button('load-models','↻ Загрузить модели')}${button('openrouter-models','OpenRouter')}</div>${field('modelSearch','Поиск по названию или ID','','search','placeholder="Например: claude, gemini, deepseek, :free" autocomplete="off"')}<label class="rpg-field"><span>Доступные модели</span><select name="modelList" size="7" aria-describedby="rpg-model-count"></select></label><p id="rpg-model-count" class="rpg-muted" role="status"></p></div>`;
+    }
+    modelConnection(){return `${this.value('aiUrl').trim()}\n${this.value('aiKey').trim()}`;}
+    updateModelPicker(message){
+        const list=this.dialog.querySelector('[name="modelList"]');if(!list)return;
+        const profile=this.value('aiMode')==='profile';
+        for(const name of ['modelSearch','modelList','model'])this.dialog.querySelector(`[name="${name}"]`).disabled=profile;
+        this.dialog.querySelector('[data-action="load-models"]').disabled=profile||!!this.modelRequest;
+        this.dialog.querySelector('[data-action="openrouter-models"]').disabled=profile;
+        const sourceMatches=this.modelSource===this.modelConnection();
+        const models=filterModels(sourceMatches?this.models:[],this.value('modelSearch'));
+        list.replaceChildren(...models.map(model=>new Option(model.name===model.id?model.id:`${model.name} — ${model.id}`,model.id)));
+        list.value=this.value('model');
+        this.dialog.querySelector('#rpg-model-count').textContent=profile?'Модель задаётся в выбранном профиле SillyTavern.':message??(this.modelRequest?'Загружаю список…':sourceMatches?`${models.length} из ${this.models.length} моделей${models.length?'':' · ничего не найдено'}`:'Укажи адрес ИИ и нажми «Загрузить модели».');
+    }
+    async loadModels(){
+        if(this.value('aiMode')==='profile')return;
+        if(!this.value('aiUrl').trim())throw new Error('Укажи адрес ИИ или нажми OpenRouter');
+        this.modelRequest?.abort();
+        const request=new AbortController();this.modelRequest=request;
+        const source=this.modelConnection(),list=this.dialog.querySelector('[name="modelList"]');
+        const timeout=setTimeout(()=>request.abort(new Error('Список моделей не ответил за 20 секунд')),20000);
+        this.updateModelPicker();
+        try{
+            const models=await listModels(this.value('aiUrl'),this.value('aiKey'),{signal:request.signal});
+            if(this.modelRequest!==request||!list.isConnected||source!==this.modelConnection())return;
+            this.models=models;this.modelSource=source;
+        }catch(error){
+            if(this.modelRequest!==request||!list.isConnected)return;
+            this.models=[];this.modelSource='';
+            this.modelRequest=null;
+            this.updateModelPicker(error.message==='Failed to fetch'?'Не удалось загрузить модели: проверь адрес, сеть и разрешение CORS у провайдера.':error.message);
+            return;
+        }finally{clearTimeout(timeout);if(this.modelRequest===request)this.modelRequest=null;}
+        if(list.isConnected)this.updateModelPicker();
+    }
     value(name){return this.dialog.querySelector(`[name="${name}"]`)?.value??'';}
     readDraft(){this.draft={id:this.value('trackerId'),name:this.value('trackerName'),prompt:this.value('trackerPrompt'),html:this.value('trackerHtml'),css:this.value('trackerCss'),fields:this.actions.parse(this.value('trackerFields'))};return validateTracker(this.draft);}
     preview(){const frame=this.dialog.querySelector('#rpg-tracker-preview');if(frame){frame.srcdoc=renderTracker(this.draft,this.actions.state(),true);this.dialog.querySelector('#rpg-widget-keys').textContent=this.draft.fields.map(f=>`{{${f.id}}}`).join(' · ');}}
@@ -101,6 +153,12 @@ export class FrameworkUI {
         if(action==='close'){this.dialog.close();return;}
         if(action==='tab'){this.tab=control.dataset.tab;this.render();return;}
         if(!s)throw new Error('Сначала открой чат');
+        if(action==='load-models'){await this.loadModels();return;}
+        if(action==='openrouter-models'){
+            this.dialog.querySelector('[name="aiUrl"]').value='https://openrouter.ai/api/v1';
+            this.dialog.querySelector('[name="modelSearch"]').value='';
+            await this.loadModels();return;
+        }
         if(action==='focus'){this.dialog.querySelector('.rpg-focus-picker').hidden=false;return;}
         if(action==='save-focus'){
             const id=this.value('focusId'),c=s.characters.find(c=>c.owner_id===id);
