@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {askAI} from '../client.js';
+import {askAI,cancelAIRequests,aiTimeoutSeconds} from '../client.js';
 import {errorReport,supportReport} from '../diagnostics.js';
 import {newState,validateDelta,applyDelta} from '../core.js';
 
@@ -32,7 +32,7 @@ test('processing signal does not disable the request timeout',async t=>{
     t.mock.method(globalThis,'fetch',async(url,{signal})=>new Promise((resolve,reject)=>signal.addEventListener('abort',()=>reject(signal.reason),{once:true})));
     const promise=askAI(prefs,'test',{}, {signal:new AbortController().signal});
     const assertion=assert.rejects(promise,e=>e.diagnostics.category==='timeout');
-    t.mock.timers.tick(90001);await assertion;
+    t.mock.timers.tick(300001);await assertion;
 });
 test('profile failures and dev-off reports omit response text and credentials',async()=>{
     const p={...prefs,aiMode:'profile',profileId:'test',devMode:false};
@@ -48,4 +48,14 @@ test('partial party deltas preserve unchanged members and reject invalid fields'
     assert.deepEqual(s.scene.party,{name:'Moon',leader:'B',members:['A','B']});
     assert.throws(()=>validateDelta({scene:{party:{members:'B'}}}));
     assert.throws(()=>validateDelta({scene:{party:{unknown:1}}}));
+});
+
+test('a slow request can pass 90 seconds and cancellation settles a non-cooperative profile',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});
+ let resolveProfile;const p={...prefs,aiMode:'profile',profileId:'test'};
+ const promise=askAI(p,'test',{}, {profileRequest:()=>new Promise(resolve=>resolveProfile=resolve)});
+ t.mock.timers.tick(90001);resolveProfile({content:'{"ok":true}'});assert.deepEqual(await promise,{ok:true});
+ const pending=askAI(p,'test',{}, {profileRequest:()=>new Promise(()=>{})});
+ const assertion=assert.rejects(pending,e=>e.name==='AbortError');cancelAIRequests();await assertion;
+ assert.equal(aiTimeoutSeconds({}),300);assert.equal(aiTimeoutSeconds({aiTimeoutSeconds:120}),120);assert.equal(aiTimeoutSeconds({aiTimeoutSeconds:9999}),900);
 });

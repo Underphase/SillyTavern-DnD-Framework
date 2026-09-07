@@ -1,6 +1,7 @@
+import {t as tr,html,setLanguage} from './i18n.js';
 export class StatusTracker {
     constructor(now=()=>Date.now()){this.now=now;this.reset();}
-    reset(){this.tasks=new Map();this.last={message:'Готово',kind:'idle'};}
+    reset(){this.tasks=new Map();this.last={message:tr('Готово'),kind:'idle'};}
     start(message){const id=Symbol();this.tasks.set(id,{message,started:this.now(),kind:'working'});return id;}
     update(id,message){const task=this.tasks.get(id);if(task)task.message=message;}
     notify(message,kind='success'){this.last={message,kind};}
@@ -12,7 +13,7 @@ export class StatusTracker {
         const task=[...this.tasks.values()].at(-1);
         if(!task)return this.last;
         const elapsed=Math.max(0,Math.floor((this.now()-task.started)/1000));
-        return {...task,message:`${task.message} · ${elapsed} с${elapsed>=30?' · ожидание продолжается':''}`,elapsed};
+        return {...task,message:html`${task.message} · ${elapsed} с${elapsed>=30?tr(' · ожидание продолжается'):''}`,elapsed};
     }
 }
 

@@ -39,6 +39,10 @@ await page.route('https://openrouter.ai/api/v1/models',route=>{
 await page.route('**/mock/v1/chat/completions',async route=>{
     aiCalls++;
     const request=route.request().postDataJSON();
+    if(request.messages[0].content.includes('Generate a proposed RPG gameplay')){
+        const input=JSON.parse(request.messages[1].content);assert.equal(input.note,'Лунный маг, уровень 12');
+        return route.fulfill({json:{choices:[{message:{content:JSON.stringify({data:{level:12,skills:{moonlight:{bonus:7}},personality:'must not be copied'}})},finish_reason:'stop'}]}});
+    }
     assert.ok(request.messages[0].content.includes('Formatting examples only'));
     assert.ok(request.messages[0].content.includes('plain strings, never objects'));
     if(invalidAI)return route.fulfill({json:{choices:[{message:{content:'bad JSON private-ui-key'},finish_reason:'stop'}]}});
@@ -193,7 +197,7 @@ try{
     await page.getByRole('button',{name:'Скачать отчёт',exact:true}).click();
     const download=await downloadEvent;
     const downloaded=JSON.parse(await readFile(await download.path(),'utf8'));
-    assert.equal(downloaded.version,'0.3.0');
+    assert.equal(downloaded.version,'0.3.1');
     assert.match(downloaded.exportedAt,/UTC[+-]/);
     assert.ok(downloaded.exportedAtUtc.endsWith('Z'));
     assert.ok(downloaded.activity.some(x=>x.data?.diagnostics?.operation==='memory-update'));
@@ -222,7 +226,7 @@ try{
     await page.locator('[data-character-field="level"] input').fill('8');
     await page.locator('[data-character-field="experience"] input').fill('1200');
     await page.locator('[data-character-field="experience_target"] input').fill('2000');
-    await page.locator('[data-character-field="is_player"] input').check();
+    assert.equal(await page.locator('[data-character-field="is_player"], [data-character-field="is_temporary"], [data-character-field="personality"], [data-character-field="background"]').count(),0);
     await page.getByText('Навыки и вещи',{exact:true}).click();
     const skills=page.locator('[data-character-field="skills"] > .rpg-value');
     await skills.locator(':scope > .rpg-value-add [data-new-key]').fill('moonstep');
@@ -263,6 +267,40 @@ try{
     const tracker=await page.evaluate(()=>fixture.context.chatMetadata.underphase_dnd.trackers[0]);
     assert.equal(tracker.fields[0].label,'Доверие');assert.ok(tracker.fields[0].instruction.includes('поступков'));
     assert.ok(tracker.html.includes('{{value}}'));
+    // Language changes only UI strings, and saving settings must not erase custom prompts.
+    await page.locator('[data-tab="prompts"]').click();
+    await page.locator('[name="characterPrompt"]').fill('Custom character instructions');
+    await page.locator('[data-action="save-prompts"]').click();
+    await page.locator('[data-tab="settings"]').click();
+    await page.locator('[name="language"]').selectOption('en');
+    await page.locator('[name="aiTimeoutSeconds"]').fill('420');
+    await page.locator('[data-action="save-settings"]').click();
+    await page.getByRole('button',{name:'Workshop',exact:true}).waitFor();
+    assert.equal(await page.evaluate(()=>fixture.context.extensionSettings.underphase_dnd.characterPrompt),'Custom character instructions');
+    assert.equal(await page.evaluate(()=>fixture.context.extensionSettings.underphase_dnd.aiTimeoutSeconds),420);
+    await page.locator('[data-tab="characters"]').click();
+    await page.locator('[data-action="edit-character"]').click();
+    assert.equal(await page.locator('[data-character-field="level"] > label').textContent(),'Level');
+    assert.equal(await page.locator('[data-character-field="name"] textarea').inputValue(),seeded.characters[0].name);
+    await page.locator('[data-tab="prompts"]').click();
+    await page.getByRole('button',{name:'Restore factory prompts',exact:true}).click();
+    assert.ok((await page.locator('[name="characterPrompt"]').inputValue()).includes('Generate a proposed RPG gameplay'));
+    await page.locator('[data-tab="characters"]').click();
+    await page.locator('[data-action="edit-character"]').click();
+    await page.getByText('✦ Generate gameplay stats',{exact:true}).click();
+    await page.locator('[name="generationNote"]').fill('Лунный маг, уровень 12');
+    const beforeProposal=await page.evaluate(()=>JSON.stringify(fixture.context.chatMetadata.underphase_dnd.characters));
+    await page.locator('[data-action="generate-character"]').click();
+    await page.waitForFunction(()=>document.querySelector('[data-character-field="level"] input').value==='12');
+    assert.equal(await page.evaluate(()=>JSON.stringify(fixture.context.chatMetadata.underphase_dnd.characters)),beforeProposal);
+    await page.screenshot({path:resolve(root,'test-results/character-generation-en-mobile.png')});
+    await page.locator('[data-action="save-character"]').click();
+    assert.equal(await page.evaluate(()=>fixture.context.chatMetadata.underphase_dnd.characters[0].skills.moonstep.bonus),5);
+    assert.equal(await page.evaluate(()=>fixture.context.chatMetadata.underphase_dnd.characters[0].skills.moonlight.bonus),7);
+    await page.locator('[data-tab="settings"]').click();
+    await page.locator('[name="language"]').selectOption('ru');
+    await page.locator('[data-action="save-settings"]').click();
+    await page.getByRole('button',{name:'Мастерская',exact:true}).waitFor();
     await page.evaluate(()=>fixture.switchChat('story-skip'));
     await page.getByRole('button',{name:'Пропустить',exact:true}).click();
     assert.equal(await page.evaluate(()=>fixture.context.chatMetadata.underphase_dnd.setup),'skipped');

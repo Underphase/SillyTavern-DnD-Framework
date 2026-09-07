@@ -41,15 +41,28 @@ export async function backend(settings,path,{method='GET',body,signal}={}) {
     }
 }
 
+const activeRequests=new Set();
+export function cancelAIRequests(){for(const controller of activeRequests)controller.abort(new DOMException('Request cancelled','AbortError'));}
+export function aiTimeoutSeconds(settings){return Math.max(30,Math.min(900,Number(settings.aiTimeoutSeconds)||300));}
+
+export function abortable(promise,signal){
+    return new Promise((resolve,reject)=>{
+        const abort=()=>reject(signal.reason??new DOMException('Cancelled','AbortError'));
+        if(signal.aborted)abort();else signal.addEventListener('abort',abort,{once:true});
+        Promise.resolve(promise).then(resolve,reject).finally(()=>signal.removeEventListener('abort',abort));
+    });
+}
+
 export async function askAI(settings,system,input,{signal,onUsage,onStage,validate=value=>value,profileRequest}={}) {
     const messages=[{role:'system',content:system},{role:'user',content:JSON.stringify(input)}];
     const started=performance.now(),requestId=globalThis.crypto.randomUUID?.()??String(Date.now());
     const diagnostics={requestId,service:'AI',stage:'configuration',mode:settings.aiMode,model:settings.aiMode==='profile'?'selected ST profile':settings.model,maxTokens:settings.maxTokens,inputCharacters:JSON.stringify(messages).length,pageOrigin:globalThis.location?.origin};
     const stage=value=>{diagnostics.stage=value;onStage?.(value);};
-    const controller=new AbortController();let timedOut=false;
+    const controller=new AbortController();let timedOut=false;activeRequests.add(controller);
+    const timeoutSeconds=aiTimeoutSeconds(settings);diagnostics.timeoutSeconds=timeoutSeconds;
     const abort=()=>controller.abort(signal.reason);
     if(signal?.aborted)abort();else signal?.addEventListener('abort',abort,{once:true});
-    const timeout=setTimeout(()=>{timedOut=true;controller.abort(new DOMException('AI request exceeded 90 seconds','TimeoutError'));},90000);
+    const timeout=setTimeout(()=>{timedOut=true;controller.abort(new DOMException(`AI request exceeded ${timeoutSeconds} seconds`,'TimeoutError'));},timeoutSeconds*1000);
     let content,usage;
     try{
         stage('request');let result;
@@ -57,7 +70,7 @@ export async function askAI(settings,system,input,{signal,onUsage,onStage,valida
             if(!settings.profileId)throw new Error('Выбери профиль подключения ИИ в настройках.');
             let send=profileRequest;
             if(!send){const {ConnectionManagerRequestService:service}=await import('../../shared.js');send=service.sendRequest.bind(service);}
-            result=await send(settings.profileId,messages,settings.maxTokens,{stream:false,signal:controller.signal,extractData:true});
+            result=await abortable(send(settings.profileId,messages,settings.maxTokens,{stream:false,signal:controller.signal,extractData:true}),controller.signal);
             content=result.content;usage=result.usage;
         }else{
             if(!settings.aiUrl||!settings.model)throw new Error('Укажи адрес ИИ и модель в настройках.');
@@ -84,10 +97,10 @@ export async function askAI(settings,system,input,{signal,onUsage,onStage,valida
         stage('model-json');const parsed=parseJson(content);
         stage('validation');return validate(parsed);
     }catch(error){
-        if(signal?.aborted)throw error;
+        if(signal?.aborted||(controller.signal.aborted&&!timedOut))throw controller.signal.reason??error;
         diagnostics.elapsedMs=Math.round(performance.now()-started);
         diagnostics.category=timedOut?'timeout':diagnostics.httpStatus>=400?'http':diagnostics.stage==='model-json'?'invalid-json':diagnostics.stage==='validation'?'validation':diagnostics.stage==='provider-json'?'invalid-response':'request-failed';
-        const wrapped=new Error(timedOut?'ИИ не ответила за 90 секунд.':sanitize(error.message??String(error),settings),{cause:error});
+        const wrapped=new Error(timedOut?`AI did not respond within ${timeoutSeconds} seconds.`:sanitize(error.message??String(error),settings),{cause:error});
         wrapped.diagnostics=sanitize(diagnostics,settings);throw wrapped;
-    }finally{clearTimeout(timeout);signal?.removeEventListener('abort',abort);}
+    }finally{activeRequests.delete(controller);clearTimeout(timeout);signal?.removeEventListener('abort',abort);}
 }

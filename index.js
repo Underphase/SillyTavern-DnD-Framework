@@ -1,15 +1,17 @@
+import {t as tr,html,setLanguage} from './i18n.js';
+import {characterProposal,characterSource,gameplayData} from './character-generation.js';
 import {processorGuide} from './processor-guide.js';
 import {sanitize,errorReport,supportReport} from './diagnostics.js';
-import {initializeLocal,syncLocal,resolveLocalCheck} from './local-store.js';
+import {initializeLocal,syncLocal,resolveLocalCheck,characterDefaults} from './local-store.js';
 import {migrateDefaultPrompts} from './prompt-migrations.js';
 import {KEY,CHARACTER_FIELDS,clone,uuid,newState,snapshot,reconcileMessages,selectFacts,parseJson,validateDelta,prepareChanges,applyDelta} from './core.js';
-import {NARRATOR_PROMPT,PROCESSOR_PROMPT,BUILDER_PROMPT,SCENE_PROMPT,DICE_PROMPT} from './prompts.js';
-import {backend,askAI} from './client.js';
+import {NARRATOR_PROMPT,PROCESSOR_PROMPT,BUILDER_PROMPT,SCENE_PROMPT,DICE_PROMPT,CHARACTER_PROMPT,FOCUS_PROMPT} from './prompts.js';
+import {backend,askAI,cancelAIRequests} from './client.js';
 import {FrameworkUI} from './ui.js';
 import {normalizePendingChanges} from './character-data.js';
 
 const ctx=()=>SillyTavern.getContext();
-const defaults={enabled:true,backendUrl:'http://127.0.0.1:8001',backendKey:'',aiMode:'custom',aiUrl:'',aiKey:'',model:'',profileId:'',maxTokens:4096,memoryBudget:6000,eventBudget:24000,opacity:0.96,devMode:false,narratorPrompt:NARRATOR_PROMPT,scenePrompt:SCENE_PROMPT,dicePrompt:DICE_PROMPT,processorPrompt:PROCESSOR_PROMPT,builderPrompt:BUILDER_PROMPT};
+const defaults={language:'ru',aiTimeoutSeconds:300,characterPrompt:CHARACTER_PROMPT,focusPrompt:FOCUS_PROMPT,enabled:true,backendUrl:'http://127.0.0.1:8001',backendKey:'',aiMode:'custom',aiUrl:'',aiKey:'',model:'',profileId:'',maxTokens:4096,memoryBudget:6000,eventBudget:24000,opacity:0.96,devMode:false,narratorPrompt:NARRATOR_PROMPT,scenePrompt:SCENE_PROMPT,dicePrompt:DICE_PROMPT,processorPrompt:PROCESSOR_PROMPT,builderPrompt:BUILDER_PROMPT};
 let active=null,activeChat=null,controller=null,timer=null,running=null,rerun=false,generating=false,ui,copiedCandidate=null;
 const settings=()=>ctx().extensionSettings[KEY];
 function saveSettings(){ctx().saveSettingsDebounced();inject();}
@@ -76,7 +78,7 @@ function schedule(){
 async function completePending(state){
     const pending=state.pending;if(!pending)return;
     if(normalizePendingChanges(pending,state.characters)){
-        log('Исправлен формат данных персонажа','Текст и списки приведены к формату персонажа без повторного запроса ИИ.');
+        log(tr('Исправлен формат данных персонажа'),tr('Текст и списки приведены к формату персонажа без повторного запроса ИИ.'));
         await save(state);
     }
     if(pending.changes.length){
@@ -90,23 +92,23 @@ async function completePending(state){
     state.pending=null;await save(state);
 }
 
-function stateSetupPending(){if(active?.setup!=='pending')return false;ui.open();ui.status('Настрой персонажа или выбери «Пропустить»','warning');return true;}
+function stateSetupPending(){if(active?.setup!=='pending')return false;ui.open();ui.status(tr('Настрой персонажа или выбери «Пропустить»'),'warning');return true;}
 async function process(){
     if(running){rerun=true;return running;}
     if(!active)return;
-    if(!settings().enabled)throw new Error('Обработка выключена в настройках');
+    if(!settings().enabled)throw new Error(tr('Обработка выключена в настройках'));
     if(stateSetupPending())return;
-    if(!prepared())throw new Error('Настрой отдельную ИИ во вкладке «Настройки»');
-    if(generating){rerun=true;ui.status('Ожидание завершения ответа рассказчика','warning');return;}
+    if(!prepared())throw new Error(tr('Настрой отдельную ИИ во вкладке «Настройки»'));
+    if(generating){rerun=true;ui.status(tr('Ожидание завершения ответа рассказчика'),'warning');return;}
     const state=active;
     running=(async()=>{
-        const task=ui.startTask('Подготовка обновления памяти');controller=new AbortController();
+        const task=ui.startTask(tr('Подготовка обновления памяти'));controller=new AbortController();
         try {
-            ui.updateTask(task,'Применение сохранённых изменений');
+            ui.updateTask(task,tr('Применение сохранённых изменений'));
             await completePending(state);if(!same(state))return;
             await refreshCharacters(state);if(!same(state))return;
             while(same(state)){
-                if(generating){rerun=true;ui.finishTask(task,'Ожидание завершения ответа рассказчика','warning');return;}
+                if(generating){rerun=true;ui.finishTask(task,tr('Ожидание завершения ответа рассказчика'),'warning');return;}
                 ensureMessageIds();
                 const {current,changes}=reconcileMessages(ctx().chat,state.processed);
                 if(!changes.length)break;
@@ -114,24 +116,24 @@ async function process(){
                 for(const change of changes){const length=JSON.stringify(change).length;if(batch.length && size+length>settings().eventBudget)break;batch.push(change);size+=length;}
                 // Preserve entire events; budget is soft for an unusually long single message.
                 const transcript=JSON.stringify(current);
-                ui.updateTask(task,`Подготовка событий: ${batch.length}`);
+                ui.updateTask(task,html`Подготовка событий: ${batch.length}`);
                 const aiTrackers=state.trackers.filter(t=>t.fields.some(f=>f.source==='ai')).map(t=>({id:t.id,prompt:t.prompt,fields:t.fields.filter(f=>f.source==='ai').map(({id,label,type,max,instruction})=>({id,label,type,max,instruction})),current:state.trackerValues[t.id]??{}}));
                 const input={events:batch,recent:current.slice(-2),summary:state.summary,
                     facts:selectFacts(state.facts,JSON.stringify(batch),settings().memoryBudget*2),
                     characters:relevantCharacters(state,JSON.stringify(batch)),characterIndex:compactCharacters(state),characterFields:CHARACTER_FIELDS,scene:state.scene,trackers:aiTrackers,manualSetup:state.manualSetup??[],
                     receipts:state.receipts.slice(-10)};
-                const delta=await askAI(settings(),processorGuide(settings().processorPrompt),input,{signal:controller.signal,onStage:stage=>ui.updateTask(task,({request:'Ожидание ответа ИИ','response-body':'Чтение ответа ИИ','provider-json':'Разбор ответа провайдера','model-json':'Разбор изменений памяти',validation:'Проверка изменений памяти'})[stage]??stage),onUsage:usage=>log('Обработка состояния',usage,state),validate:value=>{validateDelta(value);prepareChanges(value,state);return value;}});
+                const delta=await askAI(settings(),processorGuide(settings().processorPrompt),input,{signal:controller.signal,onStage:stage=>ui.updateTask(task,({request:tr('Ожидание ответа ИИ'),'response-body':tr('Чтение ответа ИИ'),'provider-json':tr('Разбор ответа провайдера'),'model-json':tr('Разбор изменений памяти'),validation:tr('Проверка изменений памяти')})[stage]??stage),onUsage:usage=>log(tr('Обработка состояния'),usage,state),validate:value=>{validateDelta(value);prepareChanges(value,state);return value;}});
                 if(!same(state)||controller.signal.aborted)return;
-                if(JSON.stringify(currentMessages())!==transcript){log('Изменения во время обработки','Устаревший ответ ИИ отброшен');continue;}
+                if(JSON.stringify(currentMessages())!==transcript){log(tr('Изменения во время обработки'),tr('Устаревший ответ ИИ отброшен'));continue;}
                 const next=new Map(state.processed.map(m=>[m.id,m]));
                 for(const change of batch){if(change.kind==='deleted')next.delete(change.id);else{const {kind,previous,...message}=change;next.set(change.id,message);}}
                 const processed=current.filter(m=>next.has(m.id)).map(m=>next.get(m.id));
                 // Keep unapplied deletions in the snapshot until their own batch is processed.
                 for(const old of next.values())if(!processed.some(m=>m.id===old.id))processed.push(old);
                 state.pending={id:uuid(),changes:prepareChanges(delta,state),delta,processed,previous:snapshot(state)};
-                ui.updateTask(task,'Сохранение памяти и персонажей');await save(state);await completePending(state);ui.refresh();
+                ui.updateTask(task,tr('Сохранение памяти и персонажей'));await save(state);await completePending(state);ui.refresh();
             }
-            if(same(state))ui.finishTask(task,'Память и треккеры обновлены','success');
+            if(same(state))ui.finishTask(task,tr('Память и треккеры обновлены'),'success');
         }catch(error){
             if(error.name!=='AbortError'){
                 if(same(state)){rerun=false;ui.finishTask(task,error.message,'error');}
@@ -139,7 +141,7 @@ async function process(){
                 if(!same(state)){log('Error',errorReport(error,settings()),state);return;}
                 throw error;
             }
-        }finally{controller=null;ui.finishTask(task,'Обновление памяти отменено','warning');running=null;if(rerun){rerun=false;schedule();}}
+        }finally{controller=null;ui.finishTask(task,tr('Обновление памяти отменено'),'warning');running=null;if(rerun){rerun=false;schedule();}}
     })();
     return running;
 }
@@ -159,25 +161,25 @@ function registerTools(){
             }
         }});
     };
-    register({name:'rpg_check',displayName:'Проверка RPG',description:'Out-of-character adjudication, invisible to characters. Resolve a check or roll using the extension’s local rules engine. Never invent results. Reuse check_key for the same action and target. Supply difficulty justification before rolling. Stored passives may resolve covered actions automatically.',
+    register({name:'rpg_check',displayName:tr('Проверка RPG'),description:'Out-of-character adjudication, invisible to characters. Resolve a check or roll using the extension’s local rules engine. Never invent results. Reuse check_key for the same action and target. Supply difficulty justification before rolling. Stored passives may resolve covered actions automatically.',
         parameters:{type:'object',properties:{check_key:{type:'string',description:'Stable action + target key; never change to retry'},reason:{type:'string'},actor_id:{type:'string',description:'owner_id from RPG context; omit for a world event'},formula:{type:'string',description:'NdS, e.g. 1d20, 1d100, 2d6; no arithmetic'},target_id:{type:'string',description:'Stored target character owner_id'},difficulty_path:{type:'string',description:'Code reads stored target difficulty: armor_class or notes.checks.lock.dc; omit difficulty when using this'},difficulty:{type:'integer'},difficulty_reason:{type:'string'},comparison:{type:'string',enum:['gte','lte']},mode:{type:'string',enum:['normal','advantage','disadvantage']},attribute:{type:'string',enum:['strength','dexterity','constitution','intelligence','wisdom','charisma']},attribute_rule:{type:'string',enum:['none','raw','d20']},bonus_paths:{type:'array',items:{type:'string'},description:'Stored integer paths such as skills.lockpick.bonus; no invented bonuses'},resolution:{type:'string',enum:['roll','automatic','impossible']},passive_path:{type:'string',description:'Stored passive object with automatic_success and actions covering check_key'}},required:['check_key','reason','formula'],additionalProperties:false},
         shouldRegister:()=>!!active&&settings().enabled,stealth:false,
         formatMessage:args=>`${args.formula}: ${args.reason}`,
         action:async args=>{
-            const state=active;if(!state)throw new Error('Нет активного чата');
+            const state=active;if(!state)throw new Error(tr('Нет активного чата'));
             const result=resolveLocalCheck(state,args,eventIdentity());
             if(same(state)){if(!state.receipts.some(r=>r.id===result.id))state.receipts.push(result);state.receipts=state.receipts.slice(-100);await save(state);ui.refresh();}
             return JSON.stringify(result);
         }});
-    register({name:'rpg_recall',displayName:'Память истории',description:'Retrieve durable story facts or a full RPG character when compact context is insufficient.',parameters:{type:'object',properties:{query:{type:'string'},actor_id:{type:'string'}},required:['query'],additionalProperties:false},shouldRegister:()=>!!active&&settings().enabled,stealth:false,formatMessage:()=> 'Вспоминаю историю…',action:async({query,actor_id})=>{
-        if(!active)throw new Error('Нет активного чата');
+    register({name:'rpg_recall',displayName:tr('Память истории'),description:'Retrieve durable story facts or a full RPG character when compact context is insufficient.',parameters:{type:'object',properties:{query:{type:'string'},actor_id:{type:'string'}},required:['query'],additionalProperties:false},shouldRegister:()=>!!active&&settings().enabled,stealth:false,formatMessage:()=> tr('Вспоминаю историю…'),action:async({query,actor_id})=>{
+        if(!active)throw new Error(tr('Нет активного чата'));
         return JSON.stringify({facts:selectFacts(active.facts,query,12000),...(actor_id?{character:active.characters.find(c=>c.owner_id===actor_id)??null}:{})});
     }});
 }
 
 async function saveCharacter(id,data,expectedUpdatedAt){
-    const state=active;if(running||state.pending)throw new Error('Дождись завершения синхронизации перед ручным редактированием');
-    if(id&&expectedUpdatedAt!==undefined&&state.characters.find(c=>c.owner_id===id)?.updated_at!==expectedUpdatedAt)throw new Error('Персонаж изменился во время редактирования. Скопируй правки и открой актуальную карточку, чтобы не потерять новые данные.');
+    const state=active;if(running||state.pending)throw new Error(tr('Дождись завершения синхронизации перед ручным редактированием'));
+    if(id&&expectedUpdatedAt!==undefined&&state.characters.find(c=>c.owner_id===id)?.updated_at!==expectedUpdatedAt)throw new Error(tr('Персонаж изменился во время редактирования. Скопируй правки и открой актуальную карточку, чтобы не потерять новые данные.'));
     const delta=validateDelta({characters:[{...(id?{owner_id:id}:{}),data}]});
     state.pending={id:uuid(),delta,changes:prepareChanges(delta,state),processed:clone(state.processed),previous:snapshot(state)};
     await save(state);await completePending(state);
@@ -190,11 +192,14 @@ async function init(){
         supportReport:()=>supportReport(active,settings(),context.isToolCallingSupported?.()??false,ui?.statusTracker.view()),
         toolsSupported:()=>context.isToolCallingSupported?.()??false,
         profiles:()=>ctx().extensionSettings.connectionManager?.profiles??[],userName:()=>ctx().name1,
-        resetPrompts:()=>{Object.assign(settings(),{narratorPrompt:NARRATOR_PROMPT,scenePrompt:SCENE_PROMPT,dicePrompt:DICE_PROMPT,processorPrompt:PROCESSOR_PROMPT,builderPrompt:BUILDER_PROMPT});saveSettings();},
-        testBackend:async()=>{const result=await backend(settings(),'/characters?scope_id=connection-test&limit=1');log('Подключение RPG API',{httpStatus:200,pageOrigin:globalThis.location?.origin});return result;},
+        effectiveProcessor:()=>processorGuide(settings().processorPrompt),
+        resetPrompts:()=>{Object.assign(settings(),{narratorPrompt:NARRATOR_PROMPT,scenePrompt:SCENE_PROMPT,dicePrompt:DICE_PROMPT,processorPrompt:PROCESSOR_PROMPT,builderPrompt:BUILDER_PROMPT,characterPrompt:CHARACTER_PROMPT,focusPrompt:FOCUS_PROMPT});saveSettings();},
+        testBackend:async()=>{const result=await backend(settings(),'/characters?scope_id=connection-test&limit=1');log(tr('Подключение RPG API'),{httpStatus:200,pageOrigin:globalThis.location?.origin});return result;},
         testAI:()=>askAI(settings(),'Return only JSON: {"ok":true}',{test:true}),
-        suggestFocus:()=>askAI(settings(),'Suggest ONE protagonist for this story. The user is not the default hero. Return JSON {"name":"...","reason":"..."}.',{summary:active.summary,characters:compactCharacters(active),recent:ctx().chat.slice(-6).map(m=>({name:m.name,text:m.mes}))}),
-        buildTracker:request=>askAI(settings(),`${settings().builderPrompt}\nUse Russian interface labels unless the user requests another language. Each field may include instruction: a concise rule for updating that field. Sample values are fictional preview data only.`,{request},{onUsage:u=>log('Конструктор',u)}),
+        suggestFocus:()=>askAI(settings(),settings().focusPrompt,{summary:active.summary,characters:compactCharacters(active),recent:ctx().chat.slice(-6).map(m=>({name:m.name,text:m.mes}))}),
+        buildTracker:request=>askAI(settings(),`${settings().builderPrompt}\nUse ${settings().language==='en'?'English':'Russian'} interface labels unless the user requests another language. Each field may include instruction: a concise rule for updating that field. Sample values are fictional preview data only.`,{request},{onUsage:u=>log(tr('Конструктор'),u)}),
+        cancelAI:()=>{rerun=false;controller?.abort();cancelAIRequests();},
+        generateCharacter:({note,source,data,isNew})=>askAI(settings(),settings().characterPrompt,{subject:data.name,allowedFields:Object.keys(gameplayData(characterDefaults())),language:settings().language,source:characterSource(ctx(),active,source),note:note.slice(0,12000),existing:isNew?Object.fromEntries(Object.entries(gameplayData(data)).filter(([key,value])=>key==='name'||JSON.stringify(value)!==JSON.stringify(characterDefaults()[key]))):gameplayData(data)},{onUsage:u=>log('Character generation',u),validate:result=>characterProposal(result,data)}),
         saveCharacter,
         skipSetup:async()=>{active.setup='skipped';await save();schedule();},
         finishSetup:async(data,focus)=>{const state=active;await saveCharacter(null,data);if(!same(state))return;const c=state.characters.find(c=>c.name===data.name);state.manualSetup=[{owner_id:c.owner_id,level:c.level,experience:c.experience,experience_target:c.experience_target}];state.setup='done';if(focus)state.protagonist={id:c.owner_id,name:c.name};await save();schedule();},
@@ -214,7 +219,7 @@ async function init(){
     for(const key of ['MESSAGE_RECEIVED','MESSAGE_EDITED','MESSAGE_UPDATED','MESSAGE_SWIPED','MESSAGE_DELETED'])if(events[key])source.on(events[key],()=>{inject();schedule();});
     source.on(events.GENERATION_STARTED,(type,options,dryRun)=>{if(dryRun||type==='quiet')return;generating=true;inject();});
     for(const key of ['GENERATION_ENDED','GENERATION_STOPPED'])if(events[key])source.on(events[key],()=>{generating=false;schedule();});
-    const entry=document.createElement('div');entry.className='extension_container';const launch=document.createElement('button');launch.className='menu_button';launch.textContent='☾ D&D Framework · Настройки';launch.addEventListener('click',()=>{ui.tab='settings';ui.open();});entry.append(launch);document.querySelector('#extensions_settings2, #extensions_settings')?.append(entry);
+    const entry=document.createElement('div');entry.className='extension_container';const launch=document.createElement('button');launch.className='menu_button';launch.textContent=tr('☾ D&D Framework · Настройки');launch.addEventListener('click',()=>{ui.tab='settings';ui.open();});entry.append(launch);document.querySelector('#extensions_settings2, #extensions_settings')?.append(entry);
     await activate();
 }
 
