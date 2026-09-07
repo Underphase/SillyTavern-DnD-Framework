@@ -10,7 +10,7 @@ const settings=()=>ctx().extensionSettings[KEY];
 function saveSettings(){ctx().saveSettingsDebounced();inject();}
 function same(state){return state===active && (ctx().getCurrentChatId?.()??ctx().chatId)===activeChat;}
 async function save(state=active){if(!state||!same(state))return;ctx().chatMetadata[KEY]=state;await ctx().saveMetadata();inject();}
-function log(title,data){if(!active||!settings().devMode)return;active.activity.push({at:new Date().toLocaleTimeString(),title,data});active.activity=active.activity.slice(-100);}
+function log(title,data){if(!active||!settings().devMode)return;active.activity.push({at:new Date().toLocaleTimeString(),title,data});active.activity=active.activity.slice(-100);ctx().saveMetadataDebounced?.();}
 function ensureMessageIds(){let changed=false;for(const m of ctx().chat){m.extra??={};if(!m.extra[KEY]?.id){m.extra[KEY]={id:uuid()};changed=true;}}if(changed)ctx().saveChat();}
 function currentMessages(){ensureMessageIds();return reconcileMessages(ctx().chat,[]).current;}
 function prepared(){return settings().aiMode==='profile'?!!settings().profileId:!!(settings().aiUrl&&settings().model);}
@@ -54,7 +54,7 @@ async function activate(){
         context.chatMetadata[KEY]=state;
     }
     active=state;ensureMessageIds();await save(state);ui?.refresh();
-    refreshCharacters(state).catch(error=>{if(same(state))ui?.status(`API: ${error.message}`,true);});
+    refreshCharacters(state).catch(error=>{if(same(state))ui?.error(error);});
     schedule();
 }
 
@@ -160,7 +160,7 @@ async function init(){
         toolsSupported:()=>context.isToolCallingSupported?.()??false,
         profiles:()=>ctx().extensionSettings.connectionManager?.profiles??[],userName:()=>ctx().name1,
         resetPrompts:()=>{Object.assign(settings(),{narratorPrompt:NARRATOR_PROMPT,processorPrompt:PROCESSOR_PROMPT,builderPrompt:BUILDER_PROMPT});saveSettings();},
-        testBackend:()=>backend(settings(),'/characters?scope_id=connection-test&limit=1'),
+        testBackend:async()=>{const result=await backend(settings(),'/characters?scope_id=connection-test&limit=1');log('Подключение RPG API',{httpStatus:200,pageOrigin:globalThis.location?.origin});return result;},
         testAI:()=>askAI(settings(),'Return only JSON: {"ok":true}',{test:true}),
         suggestFocus:()=>askAI(settings(),'Suggest ONE protagonist for this story. The user is not the default hero. Return JSON {"name":"...","reason":"..."}.',{summary:active.summary,characters:compactCharacters(active),recent:ctx().chat.slice(-6).map(m=>({name:m.name,text:m.mes}))}),
         buildTracker:request=>askAI(settings(),settings().builderPrompt,{request},{onUsage:u=>log('Конструктор',u)}),

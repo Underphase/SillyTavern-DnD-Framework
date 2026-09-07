@@ -15,8 +15,9 @@ const {chromium}=await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE).href)
 const browser=await chromium.launch({headless:true,...(process.env.BROWSER_CHANNEL?{channel:process.env.BROWSER_CHANNEL}:{})});
 const page=await browser.newPage({viewport:{width:1440,height:1100}});
 const errors=[];page.on('pageerror',error=>errors.push(error.message));
-let records=[sampleCharacter()],aiCalls=0,resolveAI,delayAI=false;
+let records=[sampleCharacter()],aiCalls=0,resolveAI,delayAI=false,apiOffline=false;
 await page.route('**/api/**',async route=>{
+    if(apiOffline)return route.abort('connectionfailed');
     const request=route.request(),url=new URL(request.url());
     if(url.pathname==='/api/characters/sync'){
         const body=request.postDataJSON();
@@ -81,8 +82,16 @@ try{
     // Restore the test processor endpoint and leave it unconfigured until the auto-update test.
     await page.locator('[name="aiUrl"]').fill(`${base}/mock/v1`);
     await page.locator('[name="model"]').fill('');
+    await page.locator('[name="devMode"]').check();
     await page.locator('[name="section_inventory"]').uncheck();
     await page.getByRole('button',{name:'Сохранить настройки',exact:true}).click();
+    apiOffline=true;
+    await page.getByRole('button',{name:'Проверить API',exact:true}).click();
+    await page.waitForFunction(()=>fixture.context.chatMetadata.underphase_dnd.activity.some(e=>e.data?.diagnostics?.category==='network'));
+    await page.getByRole('button',{name:'Dev',exact:true}).click();
+    assert.match(await page.locator('.rpg-body').textContent(),/pageOrigin/);
+    assert.match(await page.locator('.rpg-body').textContent(),/CORS_ORIGINS/);
+    apiOffline=false;
     await page.getByRole('button',{name:'История',exact:true}).click();
     assert.equal(await page.locator('summary').filter({hasText:'Инвентарь'}).count(),0);
     await page.getByRole('button',{name:'Мастерская',exact:true}).click();

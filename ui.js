@@ -61,7 +61,7 @@ export class FrameworkUI {
     restorePosition(){const p=this.actions.settings().orb??{x:0.9,y:0.78};this.position(p.x*innerWidth,p.y*innerHeight);}
     open(){if(!this.dialog.open){this.render();this.dialog.showModal();}}
     status(message,error=false){this.lastStatus={message,error};const node=this.dialog.querySelector('.rpg-status');if(node){node.textContent=message;node.classList.toggle('error',error);}this.orb.classList.toggle('rpg-error',error);}
-    error(error){this.status(error.message??String(error),true);this.actions.log?.('Ошибка',error.message);}
+    error(error){this.status(error.message??String(error),true);this.actions.log?.('Ошибка',{message:error.message??String(error),...(error.diagnostics?{diagnostics:error.diagnostics}:{})});}
     busy(value){this.orb.classList.toggle('rpg-busy',value);this.dialog.classList.toggle('rpg-working',value);}
     refresh(){if(this.dialog.open && !['workshop','settings'].includes(this.tab) && !this.dialog.contains(document.activeElement?.closest('textarea,input,select')))this.render();}
     render(){
