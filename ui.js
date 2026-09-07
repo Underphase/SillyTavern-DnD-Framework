@@ -1,3 +1,4 @@
+import {StatusTracker,formatTimestamp} from './status.js';
 import {errorReport} from './diagnostics.js';
 import {renderAbilities} from './abilities.js';
 import {escapeHtml as e,clone,SECTIONS} from './core.js';
@@ -13,12 +14,13 @@ const details=(label,value)=>`<details class="rpg-details"><summary>${e(label)}<
 
 export class FrameworkUI {
     constructor(actions) {
-        this.actions=actions;this.tab='story';this.draft=clone(SAMPLE_TRACKER);this.draftOriginal=null;
+        this.actions=actions;this.statusTracker=new StatusTracker();this.reportedErrors=new WeakSet();this.tab='story';this.draft=clone(SAMPLE_TRACKER);this.draftOriginal=null;
         this.models=[];this.modelSource='';this.modelRequest=null;
         this.orb=document.createElement('button');this.orb.id='rpg-moon';this.orb.type='button';this.orb.title='D&D Framework — open / drag';this.orb.setAttribute('aria-label','Open D&D Framework');this.orb.innerHTML='<span>☾</span><i></i>';
         this.dialog=document.createElement('dialog');this.dialog.id='rpg-framework';
         document.body.append(this.orb,this.dialog);
         this.orb.addEventListener('click',()=>{if(!this.dragged)this.open();});
+        setInterval(()=>this.paintStatus(),1000);
         let origin;
         this.orb.addEventListener('pointerdown',event=>{origin={x:event.clientX,y:event.clientY,left:this.orb.offsetLeft,top:this.orb.offsetTop};this.dragged=false;this.orb.setPointerCapture(event.pointerId);});
         this.orb.addEventListener('pointermove',event=>{
@@ -32,7 +34,7 @@ export class FrameworkUI {
         this.dialog.addEventListener('click',event=>{if(event.target===this.dialog){const b=this.dialog.getBoundingClientRect();if(event.clientX<b.left||event.clientX>b.right||event.clientY<b.top||event.clientY>b.bottom)this.dialog.close();}});
         this.dialog.addEventListener('click',event=>{
             const control=event.target.closest('[data-action]');
-            if(control) this.handle(control.dataset.action,control).catch(error=>this.error(error));
+            if(control)this.runAction(control).catch(error=>this.error(error));
         });
         this.dialog.addEventListener('change',event=>{
             if(event.target.name==='modelList' && event.target.value){
@@ -58,13 +60,34 @@ export class FrameworkUI {
             }
         },30000);
     }
-    resetForChat(){this.draft=clone(SAMPLE_TRACKER);this.draftOriginal=null;this.editingId=null;this.tab='story';this.lastStatus=null;}
+    resetForChat(){this.draft=clone(SAMPLE_TRACKER);this.draftOriginal=null;this.editingId=null;this.tab='story';this.lastStatus=null;this.statusTracker.reset();this.paintStatus();}
     position(x,y){this.orb.style.left=`${Math.max(8,Math.min(innerWidth-64,x))}px`;this.orb.style.top=`${Math.max(8,Math.min(innerHeight-64,y))}px`;}
     restorePosition(){const p=this.actions.settings().orb??{x:0.9,y:0.78};this.position(p.x*innerWidth,p.y*innerHeight);}
     open(){if(!this.dialog.open){this.render();this.dialog.showModal();}}
-    status(message,error=false){this.lastStatus={message,error};const node=this.dialog.querySelector('.rpg-status');if(node){node.textContent=message;node.classList.toggle('error',error);}this.orb.classList.toggle('rpg-error',error);}
-    error(error){const report=errorReport(error,this.actions.settings());this.status(report.message,true);this.actions.log?.('Error',report);if(this.tab==='developer')this.refresh();}
-    busy(value){this.orb.classList.toggle('rpg-busy',value);this.dialog.classList.toggle('rpg-working',value);}
+    status(message,kind='success'){this.statusTracker.notify(message,kind===true?'error':kind===false?'success':kind);this.paintStatus();}
+    startTask(message){const id=this.statusTracker.start(message);this.paintStatus();return id;}
+    updateTask(id,message){this.statusTracker.update(id,message);this.paintStatus();}
+    finishTask(id,message,kind='success'){this.statusTracker.finish(id,message,kind);this.paintStatus();}
+    paintStatus(){
+        const view=this.statusTracker.view(),node=this.dialog.querySelector('.rpg-status');
+        if(node){node.textContent=view.message;node.dataset.kind=view.kind;}
+        this.orb.dataset.status=view.kind;
+        this.orb.classList.toggle('rpg-error',view.kind==='error');
+        this.orb.classList.toggle('rpg-busy',this.statusTracker.tasks.size>0);
+        this.dialog.classList.toggle('rpg-working',this.statusTracker.tasks.size>0);
+    }
+    error(error){
+        if(error&&typeof error==='object'){if(this.reportedErrors.has(error))return;this.reportedErrors.add(error);}
+        const report=errorReport(error,this.actions.settings());this.status(report.message,'error');this.actions.log?.('Error',report);if(this.tab==='developer')this.refresh();
+    }
+    async runAction(control){
+        const action=control.dataset.action;
+        const labels={'suggest-focus':'Suggesting protagonist','generate-tracker':'Creating tracker','test-ai':'Testing AI connection','test-backend':'Testing RPG API','import-character':'Importing character','load-models':'Loading models','openrouter-models':'Loading models','save-character':'Saving character','save-memory':'Saving memory'};
+        if(!labels[action])return this.handle(action,control);
+        const previous=this.statusTracker.last,task=this.startTask(labels[action]);
+        try{await this.handle(action,control);this.finishTask(task,this.statusTracker.last===previous?`${labels[action]} completed`:this.statusTracker.last.message,this.statusTracker.last===previous?'success':this.statusTracker.last.kind);}
+        catch(error){if(!this.statusTracker.tasks.has(task))return;this.finishTask(task,error.message,'error');throw error;}
+    }
     refresh(){if(this.dialog.open && !['workshop','settings'].includes(this.tab) && !this.dialog.contains(document.activeElement?.closest('textarea,input,select')))this.render();}
     render(){
         const openDetails=new Set([...this.dialog.querySelectorAll('details[data-rpg-disclosure][open]')].map(node=>node.dataset.rpgDisclosure));
@@ -72,7 +95,8 @@ export class FrameworkUI {
         const s=this.actions.state(),prefs=this.actions.settings();
         this.dialog.style.setProperty('--rpg-opacity',prefs.opacity);
         const tabs={story:'Story',characters:'Characters',workshop:'Workshop',memory:'Memory',journal:'Dice',settings:'Settings',...(prefs.devMode?{developer:'Dev'}:{})};
-        this.dialog.innerHTML=`<div class="rpg-shell"><header class="rpg-header"><div class="rpg-brand"><span>☾</span><div><small>UNDERPHASE / D&D FRAMEWORK</small><h2>Moonlit chronicle</h2></div></div><div class="rpg-header-actions">${button('process','↻ Update','title="Process new events"')}${button('close','✕','aria-label="Close"')}</div></header><nav class="rpg-tabs" aria-label="Sections">${Object.entries(tabs).map(([key,label])=>button('tab',label,`data-tab="${key}" class="${this.tab===key?'active':''}"`)).join('')}</nav><main class="rpg-body">${!s?empty('Open a chat','Each story has its own memory, characters and trackers.'):this.content(s,prefs)}</main><footer><span class="rpg-status" role="status">${e(this.lastStatus?.message??'Your story. Its rules.')}</span><span class="rpg-signature">☾ ${s?`${s.characters.length} characters · ${s.turns} responses`:'New story'}</span></footer></div>`;
+        this.dialog.innerHTML=`<div class="rpg-shell"><header class="rpg-header"><div class="rpg-brand"><span>☾</span><div><small>UNDERPHASE / D&D FRAMEWORK</small><h2>Moonlit chronicle</h2></div></div><div class="rpg-header-actions">${button('process','↻ Update','title="Process new events"')}${button('close','✕','aria-label="Close"')}</div></header><nav class="rpg-tabs" aria-label="Sections">${Object.entries(tabs).map(([key,label])=>button('tab',label,`data-tab="${key}" class="${this.tab===key?'active':''}"`)).join('')}</nav><main class="rpg-body">${!s?empty('Open a chat','Each story has its own memory, characters and trackers.'):this.content(s,prefs)}</main><footer><span class="rpg-status" role="status">${e(this.statusTracker.view().message)}</span><span class="rpg-signature">☾ ${s?`${s.characters.length} characters · ${s.turns} responses`:'New story'}</span></footer></div>`;
+        this.paintStatus();
         for(const node of this.dialog.querySelectorAll('details[data-rpg-disclosure]'))node.open=openDetails.has(node.dataset.rpgDisclosure);
         if(s && this.tab==='workshop')this.preview();
         if(s && this.tab==='settings')this.updateModelPicker();
@@ -85,7 +109,7 @@ export class FrameworkUI {
         if(this.tab==='memory')return this.memory(s);
         if(this.tab==='journal')return this.journal(s);
         if(this.tab==='settings')return this.settingsView(s,p);
-        return `<h3>Diagnostics</h3><div class="rpg-toolbar">${button('copy-report','Copy error report')}${button('download-report','Download report')}</div><p class="rpg-muted">Reports hide configured keys. Dev mode includes AI response excerpts, which may contain story text. Review before sharing.</p><textarea class="rpg-code" id="rpg-report-fallback" aria-label="Error report" hidden readonly></textarea><p class="rpg-muted">Token usage is shown only when reported by the provider. Characters are not tokens.</p>${s.activity.slice(-60).reverse().map(a=>details(`${a.at} · ${a.title}`,a.data)).join('')||empty('No log entries','Request timing, token usage and errors appear here.')} ${button('clear-log','Clear log')}`;
+        return `<h3>Diagnostics</h3><div class="rpg-toolbar">${button('copy-report','Copy error report')}${button('download-report','Download report')}</div><p class="rpg-muted">Reports hide configured keys. Dev mode includes AI response excerpts, which may contain story text. Review before sharing.</p><textarea class="rpg-code" id="rpg-report-fallback" aria-label="Error report" hidden readonly></textarea><p class="rpg-muted">Token usage is shown only when reported by the provider. Characters are not tokens.</p>${s.activity.slice(-60).reverse().map(a=>details(`${formatTimestamp(a.at)} · ${a.title}`,a.data)).join('')||empty('No log entries','Request timing, token usage and errors appear here.')} ${button('clear-log','Clear log')}`;
     }
     story(s){
         const focus=s.protagonist?.name??'Ensemble cast';
@@ -177,7 +201,7 @@ export class FrameworkUI {
             if(s!==this.actions.state())return;
             this.dialog.querySelector('.rpg-focus-picker').hidden=false;this.dialog.querySelector('[name="focusName"]').value=result.name;
             this.dialog.querySelector('[name="focusId"]').value=s.characters.find(c=>c.name===result.name)?.owner_id??'custom';
-            this.status(`Suggestion: ${result.name}. ${result.reason??''} Click Select to confirm.`);return;
+            this.status(`Suggestion: ${result.name}. ${result.reason??''} Click Select to confirm.`,'warning');return;
         }
         if(action==='new-tracker'){this.draft=clone(SAMPLE_TRACKER);this.draft.id=`tracker_${Date.now()}`;this.draftOriginal=null;this.tab='workshop';this.render();return;}
         if(action==='edit-tracker'){this.draft=clone(s.trackers.find(t=>t.id===control.dataset.id));this.draftOriginal=this.draft.id;this.tab='workshop';this.render();return;}
@@ -185,7 +209,7 @@ export class FrameworkUI {
         if(action==='generate-tracker'){
             const request=this.value('builderRequest');if(!request.trim())throw new Error('Describe the mechanic you want');this.status('Creating interface…');
             const draft=validateTracker(await this.actions.buildTracker(request));if(s!==this.actions.state())return;
-            this.draft=draft;this.draftOriginal=null;this.render();this.status('Review the preview and rules. Click Save to apply them.');return;
+            this.draft=draft;this.draftOriginal=null;this.render();this.status('Review the preview and rules. Click Save to apply them.','warning');return;
         }
         if(action==='save-tracker'){
             const draft=this.readDraft();if(s.trackers.some(t=>t.id===draft.id&&t.id!==this.draftOriginal))throw new Error('This ID is already in use');
@@ -211,6 +235,7 @@ export class FrameworkUI {
             for(const key of Object.keys(SECTIONS))s.sections[key]=this.dialog.querySelector(`[name="section_${key}"]`).checked;
             this.actions.saveSettings();await this.actions.save();
             if(action==='test-ai')await this.actions.testAI();if(action==='test-backend')await this.actions.testBackend();
+            if(s!==this.actions.state())return;
             this.status(action==='save-settings'?'Settings saved':'Connection works');if(action==='save-settings')this.render();return;
         }
         if(action==='reset-prompts'){this.actions.resetPrompts();this.render();return;}
@@ -223,7 +248,7 @@ export class FrameworkUI {
                 this.status('Report downloaded');return;
             }
             try{await navigator.clipboard.writeText(text);this.status('Report copied');}
-            catch{const field=this.dialog.querySelector('#rpg-report-fallback');field.hidden=false;field.value=text;field.focus();field.select();this.status('Clipboard unavailable. Select and copy the report below.');}
+            catch{const field=this.dialog.querySelector('#rpg-report-fallback');field.hidden=false;field.value=text;field.focus();field.select();this.status('Clipboard unavailable. Select and copy the report below.','warning');}
             return;
         }
         if(action==='clear-log'){s.activity=[];await this.actions.save();this.render();return;}

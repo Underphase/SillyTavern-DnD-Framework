@@ -40,7 +40,7 @@ await page.route('**/mock/v1/chat/completions',async route=>{
     aiCalls++;
     if(invalidAI)return route.fulfill({json:{choices:[{message:{content:'bad JSON private-ui-key'},finish_reason:'stop'}]}});
     if(delayAI)await new Promise(r=>resolveAI=r);
-    const delta={summary:'Селена нашла ключ.',facts:[{id:'key',text:'Селена нашла серебряный ключ.'}],characters:[{owner_id:'selena',data:{experience:8500}}],scene:{weather:'Ясно'}};
+    const delta={summary:'Селена нашла ключ.',facts:[{id:'key',text:'Селена нашла серебряный ключ.'}],characters:[{owner_id:'selena',data:{experience:8500,description:{description:'A quiet traveller'}}}],scene:{weather:'Ясно'}};
     await route.fulfill({json:{choices:[{message:{content:JSON.stringify(delta)},finish_reason:'stop'}],usage:{prompt_tokens:420,completion_tokens:80,total_tokens:500}}}).catch(()=>{});
 });
 try{
@@ -134,6 +134,8 @@ try{
     await page.evaluate(()=>{fixture.context.extensionSettings.underphase_dnd.model='test-model';fixture.context.eventSource.emit('GENERATION_ENDED');});
     await page.waitForFunction(()=>fixture.context.chatMetadata.underphase_dnd.summary==='Селена нашла ключ.');
     assert.equal(aiCalls,1);
+    assert.equal(await page.locator('.rpg-status').getAttribute('data-kind'),'success');
+    assert.equal(await page.evaluate(()=>fixture.context.chatMetadata.underphase_dnd.characters[0].description),'A quiet traveller');
     assert.equal(await page.evaluate(()=>fixture.context.chatMetadata.underphase_dnd.characters[0].experience),8500);
     await page.evaluate(()=>fixture.context.eventSource.emit('GENERATION_ENDED'));
     await page.waitForTimeout(1100);assert.equal(aiCalls,1);
@@ -173,16 +175,21 @@ try{
     await page.waitForFunction(()=>fixture.context.chatMetadata.underphase_dnd.activity.some(x=>x.data?.diagnostics?.stage==='model-json'));
     assert.equal(await page.evaluate(()=>fixture.context.chatMetadata.underphase_dnd.characters[0].experience),8500);
     assert.equal(await page.evaluate(()=>fixture.context.chatMetadata.underphase_dnd.pending),null);
+    assert.equal(await page.locator('.rpg-status').getAttribute('data-kind'),'error');
     await page.getByRole('button',{name:'Dev',exact:true}).click();
+    assert.equal(await page.locator('.rpg-status').getAttribute('data-kind'),'error');
     await page.evaluate(()=>Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async()=>{throw new Error('Not allowed');}}}));
     await page.getByRole('button',{name:'Copy error report',exact:true}).click();
+    assert.equal(await page.locator('.rpg-status').getAttribute('data-kind'),'warning');
     const report=await page.locator('#rpg-report-fallback').inputValue();
     assert.ok(report.includes('model-json'));assert.ok(report.includes('bad JSON'));assert.ok(!report.includes('private-ui-key'));
     const downloadEvent=page.waitForEvent('download');
     await page.getByRole('button',{name:'Download report',exact:true}).click();
     const download=await downloadEvent;
     const downloaded=JSON.parse(await readFile(await download.path(),'utf8'));
-    assert.equal(downloaded.version,'0.2.1');
+    assert.equal(downloaded.version,'0.2.2');
+    assert.match(downloaded.exportedAt,/UTC[+-]/);
+    assert.ok(downloaded.exportedAtUtc.endsWith('Z'));
     assert.ok(downloaded.activity.some(x=>x.data?.diagnostics?.operation==='memory-update'));
     await page.screenshot({path:resolve(root,'test-results/dev-mobile.png')});
     assert.equal(await page.locator('.rpg-body').evaluate(el=>el.scrollWidth>el.clientWidth+1),false);
@@ -191,12 +198,17 @@ try{
     delayAI=true;
     await page.evaluate(()=>{fixture.context.chat[0].mes='Новое действие';fixture.context.eventSource.emit('MESSAGE_EDITED');});
     await page.waitForFunction(()=>document.querySelector('#rpg-moon').classList.contains('rpg-busy'));
+    await page.waitForFunction(()=>/Waiting for AI response.*[1-9][0-9]*s/.test(document.querySelector('.rpg-status').textContent));
+    assert.equal(await page.locator('.rpg-status').getAttribute('data-kind'),'working');
+    assert.match(await page.locator('.rpg-status').textContent(),/Waiting for AI response.*[1-9][0-9]*s/);
     while(!resolveAI)await new Promise(r=>setTimeout(r,20));
     await page.evaluate(()=>fixture.switchChat('story-b'));
     resolveAI();
     await page.waitForTimeout(1200);
     const fresh=await page.evaluate(()=>fixture.context.chatMetadata.underphase_dnd);
     assert.equal(fresh.protagonist,null);assert.equal(fresh.characters.length,0);assert.equal(fresh.trackers.length,0);assert.equal(fresh.summary,'');assert.notEqual(fresh.scopeId,'fixture');
+    assert.equal(await page.locator('#rpg-moon').evaluate(el=>el.classList.contains('rpg-busy')),false);
+    assert.notEqual(await page.locator('.rpg-status').getAttribute('data-kind'),'working');
     assert.deepEqual(errors,[]);
     console.log('Browser checks passed: desktop/mobile, centered overlay, drag, section toggles, sandbox, tracker save, focus, automatic processing, no duplicate processing, chat-switch isolation.');
 }finally{await browser.close();server.close();}

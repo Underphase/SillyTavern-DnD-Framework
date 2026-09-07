@@ -41,17 +41,18 @@ export async function backend(settings,path,{method='GET',body,signal}={}) {
     }
 }
 
-export async function askAI(settings,system,input,{signal,onUsage,validate=value=>value,profileRequest}={}) {
+export async function askAI(settings,system,input,{signal,onUsage,onStage,validate=value=>value,profileRequest}={}) {
     const messages=[{role:'system',content:system},{role:'user',content:JSON.stringify(input)}];
     const started=performance.now(),requestId=globalThis.crypto.randomUUID?.()??String(Date.now());
     const diagnostics={requestId,service:'AI',stage:'configuration',mode:settings.aiMode,model:settings.aiMode==='profile'?'selected ST profile':settings.model,maxTokens:settings.maxTokens,inputCharacters:JSON.stringify(messages).length,pageOrigin:globalThis.location?.origin};
+    const stage=value=>{diagnostics.stage=value;onStage?.(value);};
     const controller=new AbortController();let timedOut=false;
     const abort=()=>controller.abort(signal.reason);
     if(signal?.aborted)abort();else signal?.addEventListener('abort',abort,{once:true});
     const timeout=setTimeout(()=>{timedOut=true;controller.abort(new DOMException('AI request exceeded 90 seconds','TimeoutError'));},90000);
     let content,usage;
     try{
-        diagnostics.stage='request';let result;
+        stage('request');let result;
         if(settings.aiMode==='profile') {
             if(!settings.profileId)throw new Error('Select an AI connection profile in Settings.');
             let send=profileRequest;
@@ -64,11 +65,11 @@ export async function askAI(settings,system,input,{signal,onUsage,validate=value
             if(!['https:','http:'].includes(base.protocol)||base.username||base.password||base.search||base.hash)throw new Error('Use an HTTP(S) AI endpoint without credentials or query parameters.');
             const url=base.href.replace(/\/$/,'');diagnostics.endpoint=url.endsWith('/chat/completions')?url:`${url}/chat/completions`;
             const response=await fetch(diagnostics.endpoint,{method:'POST',signal:controller.signal,headers:{'Content-Type':'application/json',...(settings.aiKey?{Authorization:`Bearer ${settings.aiKey}`}:{})},body:JSON.stringify({model:settings.model,messages,temperature:0.2,max_tokens:settings.maxTokens,stream:false})});
-            diagnostics.httpStatus=response.status;diagnostics.contentType=response.headers.get('content-type');diagnostics.stage='response-body';
+            diagnostics.httpStatus=response.status;diagnostics.contentType=response.headers.get('content-type');stage('response-body');
             const body=await response.text();
             if(settings.devMode){diagnostics.responseBody=body.slice(0,24000);diagnostics.responseBodyTruncated=body.length>24000;}
             if(!response.ok)throw new Error(`AI HTTP ${response.status}: ${body.slice(0,600)}`);
-            diagnostics.stage='provider-json';result=JSON.parse(body);
+            stage('provider-json');result=JSON.parse(body);
             if(result.error)throw new Error(`AI provider error: ${JSON.stringify(result.error).slice(0,600)}`);
             content=result.choices?.[0]?.message?.content;usage=result.usage;
         }
@@ -80,8 +81,8 @@ export async function askAI(settings,system,input,{signal,onUsage,validate=value
         if(typeof content!=='string')throw new Error('AI returned no text JSON. Check the model and output token budget.');
         diagnostics.outputCharacters=content.length;
         onUsage?.({requestId,ms:Math.round(performance.now()-started),usage:usage??null,inputCharacters:diagnostics.inputCharacters,outputCharacters:content.length});
-        diagnostics.stage='model-json';const parsed=parseJson(content);
-        diagnostics.stage='validation';return validate(parsed);
+        stage('model-json');const parsed=parseJson(content);
+        stage('validation');return validate(parsed);
     }catch(error){
         if(signal?.aborted)throw error;
         diagnostics.elapsedMs=Math.round(performance.now()-started);

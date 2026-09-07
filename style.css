@@ -31,3 +31,11 @@
 #rpg-framework .rpg-ability ul{padding-left:17px;margin:4px 0}
 #rpg-framework .rpg-ability-value{font-size:12px;color:#b8b1c8;margin-top:7px}
 #rpg-framework .rpg-ability-empty{margin:12px 0 4px}
+#rpg-framework .rpg-status[data-kind="success"]{color:#87d8a6}
+#rpg-framework .rpg-status[data-kind="error"]{color:#ff8c9e}
+#rpg-framework .rpg-status[data-kind="warning"],#rpg-framework .rpg-status[data-kind="working"]{color:#edcb85}
+#rpg-framework .rpg-status[data-kind="idle"]{color:#b8b5ca}
+#rpg-framework .rpg-status{overflow-wrap:anywhere}
+#rpg-moon[data-status="success"]{border-color:#87d8a6}
+#rpg-moon[data-status="warning"],#rpg-moon[data-status="working"]{border-color:#edcb85}
+#rpg-moon[data-status="error"]{border-color:#ff8c9e}

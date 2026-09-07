@@ -1,4 +1,5 @@
-export const VERSION='0.2.1';
+import {timestampFields} from './status.js';
+export const VERSION='0.2.2';
 
 export function sanitize(value,settings={}){
     const secrets=[settings.aiKey,settings.backendKey].filter(v=>typeof v==='string'&&v.length);
@@ -21,9 +22,9 @@ export function sanitize(value,settings={}){
 
 export function errorReport(error,settings={}){
     const cause=(e,depth=0)=>e&&depth<5?{name:e.name,message:e.message,stack:e.stack,cause:cause(e.cause,depth+1)}:null;
-    return sanitize({at:new Date().toISOString(),version:VERSION,name:error?.name??'Error',message:error?.message??String(error),stack:error?.stack??null,cause:cause(error?.cause),diagnostics:error?.diagnostics??null},settings);
+    return sanitize({...timestampFields(),version:VERSION,name:error?.name??'Error',message:error?.message??String(error),stack:error?.stack??null,cause:cause(error?.cause),diagnostics:error?.diagnostics??null},settings);
 }
 
-export function supportReport(state,settings,toolsSupported){
-    return sanitize({version:VERSION,exportedAt:new Date().toISOString(),environment:{pageOrigin:globalThis.location?.origin,userAgent:globalThis.navigator?.userAgent,toolsSupported},configuration:{aiMode:settings.aiMode,model:settings.aiMode==='profile'?'selected ST profile':settings.model,maxTokens:settings.maxTokens,eventBudget:settings.eventBudget,memoryBudget:settings.memoryBudget,devMode:settings.devMode},state:{storage:state.storage,characters:state.characters.length,processedMessages:state.processed.length,pending:state.pending?{id:state.pending.id,changes:state.pending.changes.length}:null},activity:state.activity},settings);
+export function supportReport(state,settings,toolsSupported,currentStatus=null){
+    return sanitize({version:VERSION,...timestampFields(undefined,'exportedAt'),environment:{timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone,pageOrigin:globalThis.location?.origin,userAgent:globalThis.navigator?.userAgent,toolsSupported},configuration:{aiMode:settings.aiMode,model:settings.aiMode==='profile'?'selected ST profile':settings.model,maxTokens:settings.maxTokens,eventBudget:settings.eventBudget,memoryBudget:settings.memoryBudget,devMode:settings.devMode},currentStatus,state:{storage:state.storage,characters:state.characters.length,processedMessages:state.processed.length,pending:state.pending?{id:state.pending.id,changes:state.pending.changes.length}:null},activity:state.activity.map(a=>({...a,...timestampFields(a.at),data:a.data?.at?{...a.data,...timestampFields(a.data.atUtc??a.data.at)}:a.data}))},settings);
 }

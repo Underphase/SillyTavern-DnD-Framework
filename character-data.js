@@ -31,6 +31,8 @@ export function normalizeCharacterData(data, existing = {}) {
             if(typeof value==='string')value=[value];
             if(!Array.isArray(value)||value.some(tag=>typeof tag!=='string'))throw new Error('Character tags: expected an array of strings');
         } else if(Object.hasOwn(TEXT_FIELDS,field)) {
+            // Some models wrap narrative text despite the schema; unwrap only lossless singleton wrappers.
+            if(['description','background'].includes(field)&&object(value)&&Object.keys(value).length===1&&typeof value.description==='string')value=value.description;
             if(typeof value!=='string'||value.length>TEXT_FIELDS[field]||(field==='name'&&!value.length))throw new Error(`Character field ${field}: expected text${Number.isFinite(TEXT_FIELDS[field])?` up to ${TEXT_FIELDS[field]} characters`:''}`);
         } else throw new Error(`Unknown character field: ${field}`);
         result[field]=value;

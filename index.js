@@ -93,14 +93,16 @@ async function process(){
     if(!active)return;
     if(!settings().enabled)throw new Error('Processing is disabled in Settings');
     if(!prepared())throw new Error('Configure the processing AI in Settings');
-    if(generating){rerun=true;return;}
+    if(generating){rerun=true;ui.status('Waiting for the narrator to finish','warning');return;}
     const state=active;
     running=(async()=>{
-        ui.busy(true);controller=new AbortController();
+        const task=ui.startTask('Preparing memory update');controller=new AbortController();
         try {
+            ui.updateTask(task,'Applying pending changes');
             await completePending(state);if(!same(state))return;
             await refreshCharacters(state);if(!same(state))return;
             while(same(state)){
+                if(generating){rerun=true;ui.finishTask(task,'Waiting for the narrator to finish','warning');return;}
                 ensureMessageIds();
                 const {current,changes}=reconcileMessages(ctx().chat,state.processed);
                 if(!changes.length)break;
@@ -108,13 +110,13 @@ async function process(){
                 for(const change of changes){const length=JSON.stringify(change).length;if(batch.length && size+length>settings().eventBudget)break;batch.push(change);size+=length;}
                 // Preserve entire events; budget is soft for an unusually long single message.
                 const transcript=JSON.stringify(current);
-                ui.status(`Updating memory · ${batch.length} events…`);
+                ui.updateTask(task,`Preparing ${batch.length} events`);
                 const aiTrackers=state.trackers.filter(t=>t.fields.some(f=>f.source==='ai')).map(t=>({id:t.id,prompt:t.prompt,fields:t.fields.filter(f=>f.source==='ai').map(({id,label,type,max})=>({id,label,type,max})),current:state.trackerValues[t.id]??{}}));
                 const input={events:batch,recent:current.slice(-2),summary:state.summary,
                     facts:selectFacts(state.facts,JSON.stringify(batch),settings().memoryBudget*2),
                     characters:relevantCharacters(state,JSON.stringify(batch)),characterIndex:compactCharacters(state),characterFields:CHARACTER_FIELDS,scene:state.scene,trackers:aiTrackers,
                     receipts:state.receipts.slice(-10)};
-                const delta=await askAI(settings(),`${settings().processorPrompt}\n${CHARACTER_DATA_RULES}\nAll character data is stored locally. Return only changed fields; scene.party can be a partial object. Preserve the story language.`,input,{signal:controller.signal,onUsage:usage=>log('Memory processing',usage,state),validate:value=>{validateDelta(value);prepareChanges(value,state);return value;}});
+                const delta=await askAI(settings(),`${settings().processorPrompt}\n${CHARACTER_DATA_RULES}\nAll character data is stored locally. Return only changed fields; scene.party can be a partial object. Preserve the story language.`,input,{signal:controller.signal,onStage:stage=>ui.updateTask(task,({request:'Waiting for AI response','response-body':'Reading AI response','provider-json':'Reading provider JSON','model-json':'Parsing memory changes',validation:'Validating memory changes'})[stage]??stage),onUsage:usage=>log('Memory processing',usage,state),validate:value=>{validateDelta(value);prepareChanges(value,state);return value;}});
                 if(!same(state)||controller.signal.aborted)return;
                 if(JSON.stringify(currentMessages())!==transcript){log('Messages changed during processing','Discarded an outdated AI response');continue;}
                 const next=new Map(state.processed.map(m=>[m.id,m]));
@@ -123,16 +125,17 @@ async function process(){
                 // Keep unapplied deletions in the snapshot until their own batch is processed.
                 for(const old of next.values())if(!processed.some(m=>m.id===old.id))processed.push(old);
                 state.pending={id:uuid(),changes:prepareChanges(delta,state),delta,processed,previous:snapshot(state)};
-                await save(state);await completePending(state);ui.refresh();
+                ui.updateTask(task,'Saving memory and characters');await save(state);await completePending(state);ui.refresh();
             }
-            if(same(state))ui.status('Memory and trackers updated');
+            if(same(state))ui.finishTask(task,'Memory and trackers updated','success');
         }catch(error){
             if(error.name!=='AbortError'){
+                if(same(state)){rerun=false;ui.finishTask(task,error.message,'error');}
                 error.diagnostics={...error.diagnostics,operation:'memory-update',pendingId:state.pending?.id??null,processedMessages:state.processed.length,characterCount:state.characters.length};
                 if(!same(state)){log('Error',errorReport(error,settings()),state);return;}
                 throw error;
             }
-        }finally{controller=null;ui.busy(false);running=null;if(rerun){rerun=false;schedule();}}
+        }finally{controller=null;ui.finishTask(task,'Memory update cancelled','warning');running=null;if(rerun){rerun=false;schedule();}}
     })();
     return running;
 }
@@ -179,7 +182,7 @@ async function init(){
     const context=ctx();context.extensionSettings[KEY]={...defaults,...context.extensionSettings[KEY]};
     if(migrateDefaultPrompts(context.extensionSettings[KEY]))context.saveSettingsDebounced();
     ui=new FrameworkUI({state:()=>active,settings,save,saveSettings,parse:parseJson,log,process,refreshCharacters,
-        supportReport:()=>supportReport(active,settings(),context.isToolCallingSupported?.()??false),
+        supportReport:()=>supportReport(active,settings(),context.isToolCallingSupported?.()??false,ui?.statusTracker.view()),
         toolsSupported:()=>context.isToolCallingSupported?.()??false,
         profiles:()=>ctx().extensionSettings.connectionManager?.profiles??[],userName:()=>ctx().name1,
         resetPrompts:()=>{Object.assign(settings(),{narratorPrompt:NARRATOR_PROMPT,scenePrompt:SCENE_PROMPT,processorPrompt:PROCESSOR_PROMPT,builderPrompt:BUILDER_PROMPT});saveSettings();},
