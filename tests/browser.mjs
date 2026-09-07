@@ -38,6 +38,9 @@ await page.route('https://openrouter.ai/api/v1/models',route=>{
 });
 await page.route('**/mock/v1/chat/completions',async route=>{
     aiCalls++;
+    const request=route.request().postDataJSON();
+    assert.ok(request.messages[0].content.includes('Formatting examples only'));
+    assert.ok(request.messages[0].content.includes('plain strings, never objects'));
     if(invalidAI)return route.fulfill({json:{choices:[{message:{content:'bad JSON private-ui-key'},finish_reason:'stop'}]}});
     if(delayAI)await new Promise(r=>resolveAI=r);
     const delta={summary:'Селена нашла ключ.',facts:[{id:'key',text:'Селена нашла серебряный ключ.'}],characters:[{owner_id:'selena',data:{experience:8500,description:{description:'A quiet traveller'}}}],scene:{weather:'Ясно'}};
@@ -187,7 +190,7 @@ try{
     await page.getByRole('button',{name:'Download report',exact:true}).click();
     const download=await downloadEvent;
     const downloaded=JSON.parse(await readFile(await download.path(),'utf8'));
-    assert.equal(downloaded.version,'0.2.2');
+    assert.equal(downloaded.version,'0.2.3');
     assert.match(downloaded.exportedAt,/UTC[+-]/);
     assert.ok(downloaded.exportedAtUtc.endsWith('Z'));
     assert.ok(downloaded.activity.some(x=>x.data?.diagnostics?.operation==='memory-update'));

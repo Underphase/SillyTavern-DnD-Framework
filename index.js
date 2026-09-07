@@ -1,3 +1,4 @@
+import {processorGuide} from './processor-guide.js';
 import {sanitize,errorReport,supportReport} from './diagnostics.js';
 import {initializeLocal,syncLocal,resolveLocalCheck} from './local-store.js';
 import {migrateDefaultPrompts} from './prompt-migrations.js';
@@ -5,7 +6,7 @@ import {KEY,CHARACTER_FIELDS,clone,uuid,newState,snapshot,reconcileMessages,sele
 import {NARRATOR_PROMPT,PROCESSOR_PROMPT,BUILDER_PROMPT,SCENE_PROMPT} from './prompts.js';
 import {backend,askAI} from './client.js';
 import {FrameworkUI} from './ui.js';
-import {CHARACTER_DATA_RULES,normalizePendingChanges} from './character-data.js';
+import {normalizePendingChanges} from './character-data.js';
 
 const ctx=()=>SillyTavern.getContext();
 const defaults={enabled:true,backendUrl:'http://127.0.0.1:8001',backendKey:'',aiMode:'custom',aiUrl:'',aiKey:'',model:'',profileId:'',maxTokens:4096,memoryBudget:6000,eventBudget:24000,opacity:0.96,devMode:false,narratorPrompt:NARRATOR_PROMPT,scenePrompt:SCENE_PROMPT,processorPrompt:PROCESSOR_PROMPT,builderPrompt:BUILDER_PROMPT};
@@ -116,7 +117,7 @@ async function process(){
                     facts:selectFacts(state.facts,JSON.stringify(batch),settings().memoryBudget*2),
                     characters:relevantCharacters(state,JSON.stringify(batch)),characterIndex:compactCharacters(state),characterFields:CHARACTER_FIELDS,scene:state.scene,trackers:aiTrackers,
                     receipts:state.receipts.slice(-10)};
-                const delta=await askAI(settings(),`${settings().processorPrompt}\n${CHARACTER_DATA_RULES}\nAll character data is stored locally. Return only changed fields; scene.party can be a partial object. Preserve the story language.`,input,{signal:controller.signal,onStage:stage=>ui.updateTask(task,({request:'Waiting for AI response','response-body':'Reading AI response','provider-json':'Reading provider JSON','model-json':'Parsing memory changes',validation:'Validating memory changes'})[stage]??stage),onUsage:usage=>log('Memory processing',usage,state),validate:value=>{validateDelta(value);prepareChanges(value,state);return value;}});
+                const delta=await askAI(settings(),processorGuide(settings().processorPrompt),input,{signal:controller.signal,onStage:stage=>ui.updateTask(task,({request:'Waiting for AI response','response-body':'Reading AI response','provider-json':'Reading provider JSON','model-json':'Parsing memory changes',validation:'Validating memory changes'})[stage]??stage),onUsage:usage=>log('Memory processing',usage,state),validate:value=>{validateDelta(value);prepareChanges(value,state);return value;}});
                 if(!same(state)||controller.signal.aborted)return;
                 if(JSON.stringify(currentMessages())!==transcript){log('Messages changed during processing','Discarded an outdated AI response');continue;}
                 const next=new Map(state.processed.map(m=>[m.id,m]));

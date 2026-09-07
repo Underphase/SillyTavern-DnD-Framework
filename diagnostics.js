@@ -1,5 +1,5 @@
 import {timestampFields} from './status.js';
-export const VERSION='0.2.2';
+export const VERSION='0.2.3';
 
 export function sanitize(value,settings={}){
     const secrets=[settings.aiKey,settings.backendKey].filter(v=>typeof v==='string'&&v.length);
