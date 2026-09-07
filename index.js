@@ -1,11 +1,12 @@
+import {migrateDefaultPrompts} from './prompt-migrations.js';
 import {KEY,CHARACTER_FIELDS,clone,uuid,newState,snapshot,reconcileMessages,selectFacts,parseJson,validateDelta,prepareChanges,applyDelta} from './core.js';
-import {NARRATOR_PROMPT,PROCESSOR_PROMPT,BUILDER_PROMPT} from './prompts.js';
+import {NARRATOR_PROMPT,PROCESSOR_PROMPT,BUILDER_PROMPT,SCENE_PROMPT} from './prompts.js';
 import {backend,askAI} from './client.js';
 import {FrameworkUI} from './ui.js';
 import {CHARACTER_DATA_RULES,normalizePendingChanges} from './character-data.js';
 
 const ctx=()=>SillyTavern.getContext();
-const defaults={enabled:true,backendUrl:'http://127.0.0.1:8001',backendKey:'',aiMode:'custom',aiUrl:'',aiKey:'',model:'',profileId:'',maxTokens:4096,memoryBudget:6000,eventBudget:24000,opacity:0.96,devMode:false,narratorPrompt:NARRATOR_PROMPT,processorPrompt:PROCESSOR_PROMPT,builderPrompt:BUILDER_PROMPT};
+const defaults={enabled:true,backendUrl:'http://127.0.0.1:8001',backendKey:'',aiMode:'custom',aiUrl:'',aiKey:'',model:'',profileId:'',maxTokens:4096,memoryBudget:6000,eventBudget:24000,opacity:0.96,devMode:false,narratorPrompt:NARRATOR_PROMPT,scenePrompt:SCENE_PROMPT,processorPrompt:PROCESSOR_PROMPT,builderPrompt:BUILDER_PROMPT};
 let active=null,activeChat=null,controller=null,timer=null,running=null,rerun=false,generating=false,ui,copiedCandidate=null;
 const settings=()=>ctx().extensionSettings[KEY];
 function saveSettings(){ctx().saveSettingsDebounced();inject();}
@@ -26,9 +27,9 @@ function inject(){
     const context=ctx();
     if(!active||!settings()?.enabled){context.setExtensionPrompt(KEY,'',1,0,false,0);return;}
     const query=context.chat.slice(-3).map(m=>m.mes).join('\n');
-    const focus=active.protagonist?`Single protagonist: ${active.protagonist.name}. The user is the protagonist ONLY if explicitly selected.`:'Ensemble narration. The user is not the default protagonist.';
-    const material={scope:active.scopeId,focus,scene:active.scene,summary:active.summary,characters:compactCharacters(active),facts:selectFacts(active.facts,query,settings().memoryBudget)};
-    const prompt=`${settings().narratorPrompt}\n${JSON.stringify(material)}\n${context.isToolCallingSupported?.()?'Use rpg_check for unresolved checks.':'Tool calling is unavailable. Do not fabricate dice results; leave uncertain checks unresolved until tools are enabled.'}`;
+    const focus=active.protagonist?`Narrative focus: ${active.protagonist.name}. Focus does not change character ownership, presence or scene pacing.`:'No selected protagonist. Share focus among established scene participants; preserve their assigned control.';
+    const material={scope:active.scopeId,focus,scene:active.scene,summary:active.summary,knownCharacters:compactCharacters(active),facts:selectFacts(active.facts,query,settings().memoryBudget)};
+    const prompt=`${settings().narratorPrompt}\n${settings().scenePrompt}\nKnown characters below are a registry, not a list of current scene participants or permission to control them.\n${JSON.stringify(material)}\n${context.isToolCallingSupported?.()?'Use rpg_check for unresolved checks.':'Tool calling is unavailable. Do not fabricate dice results; leave uncertain checks unresolved until tools are enabled.'}`;
     context.setExtensionPrompt(KEY,prompt,1,0,false,0);
 }
 
@@ -161,10 +162,11 @@ async function saveCharacter(id,data){
 
 async function init(){
     const context=ctx();context.extensionSettings[KEY]={...defaults,...context.extensionSettings[KEY]};
+    if(migrateDefaultPrompts(context.extensionSettings[KEY]))context.saveSettingsDebounced();
     ui=new FrameworkUI({state:()=>active,settings,save,saveSettings,parse:parseJson,log,process,refreshCharacters,
         toolsSupported:()=>context.isToolCallingSupported?.()??false,
         profiles:()=>ctx().extensionSettings.connectionManager?.profiles??[],userName:()=>ctx().name1,
-        resetPrompts:()=>{Object.assign(settings(),{narratorPrompt:NARRATOR_PROMPT,processorPrompt:PROCESSOR_PROMPT,builderPrompt:BUILDER_PROMPT});saveSettings();},
+        resetPrompts:()=>{Object.assign(settings(),{narratorPrompt:NARRATOR_PROMPT,scenePrompt:SCENE_PROMPT,processorPrompt:PROCESSOR_PROMPT,builderPrompt:BUILDER_PROMPT});saveSettings();},
         testBackend:async()=>{const result=await backend(settings(),'/characters?scope_id=connection-test&limit=1');log('Подключение RPG API',{httpStatus:200,pageOrigin:globalThis.location?.origin});return result;},
         testAI:()=>askAI(settings(),'Return only JSON: {"ok":true}',{test:true}),
         suggestFocus:()=>askAI(settings(),'Suggest ONE protagonist for this story. The user is not the default hero. Return JSON {"name":"...","reason":"..."}.',{summary:active.summary,characters:compactCharacters(active),recent:ctx().chat.slice(-6).map(m=>({name:m.name,text:m.mes}))}),

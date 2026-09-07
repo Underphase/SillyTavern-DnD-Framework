@@ -48,6 +48,19 @@ try{
     await page.getByRole('heading',{name:'Селена Нокс',exact:true,level:1}).waitFor();
     await mkdir(resolve(root,'test-results'),{recursive:true});
     await page.screenshot({path:resolve(root,'test-results/desktop.png')});
+    assert.equal(await page.evaluate(()=>fixture.context.extensionSettings.underphase_dnd.narratorPrompt.includes("without waiting for the user's action")),false);
+    assert.ok(await page.evaluate(()=>fixture.prompts.underphase_dnd.includes('not an entrance into the scene')));
+    await page.locator('.rpg-abilities > summary').click();
+    assert.equal(await page.locator('.rpg-ability').count(),3);
+    await page.locator('.rpg-ability-more > summary').click();
+    await page.locator('.rpg-abilities').scrollIntoViewIfNeeded();
+    await page.screenshot({path:resolve(root,'test-results/skills-desktop.png')});
+    assert.equal(await page.locator('.rpg-abilities pre').count(),0);
+    await page.setViewportSize({width:390,height:844});
+    await page.locator('.rpg-abilities').scrollIntoViewIfNeeded();
+    await page.screenshot({path:resolve(root,'test-results/skills-mobile.png')});
+    assert.equal(await page.locator('.rpg-body').evaluate(el=>el.scrollWidth>el.clientWidth+1),false);
+    await page.setViewportSize({width:1440,height:1100});
     // Overlay always opens in the viewport center after dragging the launcher.
     await page.getByRole('button',{name:'Закрыть',exact:true}).click();
     const orb=await page.locator('#rpg-moon').boundingBox();await page.mouse.move(orb.x+20,orb.y+20);await page.mouse.down();await page.mouse.move(150,180,{steps:8});await page.mouse.up();

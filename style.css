@@ -9,3 +9,25 @@
 #rpg-framework select[name=modelList] option:checked{background:#65508e;color:#fff}
 #rpg-framework button:disabled,#rpg-framework input:disabled,#rpg-framework select:disabled{opacity:.5;cursor:default}
 #rpg-framework #rpg-model-count{margin:8px 0 0;min-height:19px}
+#rpg-framework .rpg-abilities>summary{display:list-item;line-height:24px}
+#rpg-framework .rpg-ability-count{display:inline-block;margin-left:6px;padding:0 7px;border-radius:6px;background:#af93ef18;color:#cab5ed;font-size:10px;vertical-align:middle}
+#rpg-framework .rpg-ability-group{margin-top:16px}
+#rpg-framework .rpg-ability-group-title{font-size:10px;letter-spacing:1px;color:#b2a4c8;margin-bottom:9px}
+#rpg-framework .rpg-ability-list{display:grid;gap:9px;min-width:0}
+#rpg-framework .rpg-ability{min-width:0;padding:13px 14px;border:1px solid #aa91d51e;border-radius:12px;background:linear-gradient(120deg,#af8ddd0b,#17203844)}
+#rpg-framework .rpg-ability-heading{display:flex;align-items:flex-start;gap:9px}
+#rpg-framework .rpg-ability-heading h4{font:600 14px/1.5 system-ui;margin:0;color:#e0d7ed;overflow-wrap:anywhere}
+#rpg-framework .rpg-ability-icon{color:#b69ade;flex-shrink:0;line-height:21px;font-size:16px}
+#rpg-framework .rpg-ability-badges{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
+#rpg-framework .rpg-ability-badges span{font-size:10px;color:#beafd3;border-radius:5px;background:#ab87d810;padding:3px 7px;overflow-wrap:anywhere}
+#rpg-framework .rpg-ability-description,#rpg-framework .rpg-ability-intro{font-size:12px;line-height:1.65;color:#b8b1c8;margin:9px 0 0;white-space:pre-wrap}
+#rpg-framework .rpg-ability-more{margin-top:9px;padding-top:8px;border-top:1px solid #bda4dd12}
+#rpg-framework .rpg-ability-more summary{font-size:11px;color:#b19ccb}
+#rpg-framework .rpg-ability-more p{font-size:12px;margin:10px 0;white-space:pre-wrap}
+#rpg-framework .rpg-ability dl{margin:9px 0 0;font-size:12px}
+#rpg-framework .rpg-ability dl>div{display:grid;grid-template-columns:minmax(70px,.8fr) minmax(0,1.2fr);gap:10px;padding:5px 0}
+#rpg-framework .rpg-ability dt{color:#968da9;overflow-wrap:anywhere}
+#rpg-framework .rpg-ability dd{margin:0;color:#c9c0d6;overflow-wrap:anywhere}
+#rpg-framework .rpg-ability ul{padding-left:17px;margin:4px 0}
+#rpg-framework .rpg-ability-value{font-size:12px;color:#b8b1c8;margin-top:7px}
+#rpg-framework .rpg-ability-empty{margin:12px 0 4px}
